@@ -1,0 +1,102 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Models (large files - keep in models/ but ignore downloads)
+*.pt
+*.pth
+*.onnx
+*.engine
+!models/.gitkeep
+
+# YOLO runs and artifacts
+runs/
+wandb/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+tmp/
+temp/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Calibration files (user-specific)
+*_calibration.json
+calibration_*.json
+
+# Video files (too large for git)
+
+#*.mp4
+#*.mov
+#*.avi
+#*.mkv
+#*.webm
+
+!bin/.gitkeep
+
+
+# Output videos
+output_*.mp4
+annotated_*.mp4
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Gemini/AI assistant
+.gemini/
