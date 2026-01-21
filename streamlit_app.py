@@ -55,6 +55,10 @@ st.markdown(
 
 def _save_upload(uploaded_file) -> str:
     suffix = os.path.splitext(uploaded_file.name)[-1] or ".mp4"
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.read())
         return tmp.name
@@ -552,7 +556,14 @@ def main():
 
     video_path = None
     if uploaded is not None:
-        video_path = _save_upload(uploaded)
+        upload_id = getattr(uploaded, "file_id", None)
+        if not upload_id:
+            upload_id = f"{uploaded.name}:{uploaded.size}:{uploaded.type}"
+        cached_path = st.session_state.get("uploaded_video_path")
+        if st.session_state.get("uploaded_video_id") != upload_id or not cached_path:
+            st.session_state["uploaded_video_id"] = upload_id
+            st.session_state["uploaded_video_path"] = _save_upload(uploaded)
+        video_path = st.session_state.get("uploaded_video_path")
     elif samples[sample_choice] is not None:
         candidate = Path(os.getcwd()) / samples[sample_choice]
         if candidate.exists():
