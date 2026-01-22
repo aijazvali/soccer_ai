@@ -8,3 +8,4 @@ streamlit-drawable-canvas==0.9.3
 pillow>=9.0.0
 tqdm>=4.64.0
 streamlit-drawable-canvas
+google-genai

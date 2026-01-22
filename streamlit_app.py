@@ -762,6 +762,16 @@ REPORT_SECTIONS = [
 MAX_REPORT_TOKENS = 100000
 TOKEN_CHAR_RATIO = 4
 MAX_REPORT_CHARS = MAX_REPORT_TOKENS * TOKEN_CHAR_RATIO
+CHAT_HISTORY_LIMIT = 8
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_TEMPERATURE = 0.2
+DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 1024
+COACH_SYSTEM_PROMPT = (
+    "You are a soccer performance analyst and coach. "
+    "Use only the provided report JSON to answer. "
+    "If a detail is missing, say you do not know. "
+    "Be concise, practical, and specific."
+)
 
 
 def _report_section_list(report_sections) -> List[str]:
@@ -877,6 +887,106 @@ def _trim_report_for_context(report_data: dict, max_chars: int) -> tuple[dict, O
             }
 
     return data, truncation or None
+
+
+def _get_gemini_api_key() -> Optional[str]:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        return api_key
+    secrets = getattr(st, "secrets", None)
+    if not secrets:
+        return None
+    try:
+        api_key = secrets.get("GEMINI_API_KEY")
+    except Exception:
+        api_key = None
+    if api_key:
+        return api_key
+    try:
+        return secrets["GEMINI_API_KEY"]
+    except Exception:
+        return None
+
+
+def _gemini_prereq_error() -> Optional[str]:
+    if not _get_gemini_api_key():
+        return "Set GEMINI_API_KEY in your environment or Streamlit secrets to enable chat."
+    try:
+        from google import genai  # noqa: F401
+    except Exception:
+        return "Install the google-genai package to enable chat."
+    return None
+
+
+def _build_chat_prompt(report_json: str, history: List[dict], user_message: str) -> str:
+    conversation_lines = []
+    for msg in history:
+        role = msg.get("role")
+        prefix = "Assistant" if role == "assistant" else "User"
+        content = msg.get("content", "")
+        if content:
+            conversation_lines.append(f"{prefix}: {content}")
+    conversation_block = "\n".join(conversation_lines)
+    parts = ["Report JSON:", report_json]
+    if conversation_block:
+        parts.extend(["Conversation:", conversation_block])
+    parts.append(f"User: {user_message}")
+    parts.append("Assistant:")
+    return "\n\n".join(parts)
+
+
+def _generate_gemini_response(
+    report_json: str,
+    user_message: str,
+    history: List[dict],
+    model: str,
+    temperature: float,
+    max_output_tokens: int,
+) -> tuple[Optional[str], Optional[str]]:
+    api_key = _get_gemini_api_key()
+    if not api_key:
+        return None, "Missing GEMINI_API_KEY. Set it and restart the app."
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception:
+        return None, "Missing dependency: google-genai."
+    history = history[-CHAT_HISTORY_LIMIT:]
+    prompt = _build_chat_prompt(report_json, history, user_message)
+    config = types.GenerateContentConfig(
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        system_instruction=COACH_SYSTEM_PROMPT,
+    )
+    try:
+        client = st.session_state.get("gemini_client")
+        if client is None:
+            client = genai.Client(api_key=api_key)
+            st.session_state["gemini_client"] = client
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+    except Exception as exc:
+        message = f"Gemini request failed: {exc.__class__.__name__}: {exc}"
+        if "closed" in str(exc).lower():
+            try:
+                client = genai.Client(api_key=api_key)
+                st.session_state["gemini_client"] = client
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config,
+                )
+            except Exception as exc_retry:
+                return None, f"Gemini request failed: {exc_retry.__class__.__name__}: {exc_retry}"
+        else:
+            return None, message
+    text = getattr(response, "text", None)
+    if text is None:
+        return "", None
+    return text.strip(), None
 
 
 def sidebar_options(calibration_default: Optional[str] = None) -> TouchOptions:
@@ -1374,227 +1484,347 @@ def main():
     
     st.markdown("</div>", unsafe_allow_html=True)
     frame_placeholder_full = st.empty()
+    analysis_cache = st.session_state.get("analysis_cache")
+    cache_video_path = None
+    if isinstance(analysis_cache, dict):
+        cache_video_path = analysis_cache.get("video_path")
+    use_cache = False
+    display_stride_used = options.display_stride
+    max_frames_used = None if max_frames <= 0 else int(max_frames)
 
     if not run_btn:
-        return
-
-    if not video_path:
-        st.error("Please upload a video or select a sample file.")
-        return
-
-    total_frames = total_frames or _video_frame_count(video_path)
-    input_fps = _video_fps(video_path)
-    output_fps = max(1.0, input_fps / max(1, options.display_stride))
-    left = right = 0
-    processed_frames = 0
-    last_avg_speed = None
-    last_max_speed = None
-    speed_points = []
-    total_jumps = 0
-    highest_jump_m = None
-    highest_jump_px = None
-    shot_log = []
-    shot_count = 0
-    total_time_sec = None
-    total_distance_m = None
-    peak_accel_mps2 = None
-    peak_decel_mps2 = None
-    annotated_video_path = None
-    video_writer = None
-
-    gen = run_touch_detection(
-        video_path,
-        options=options,
-        max_frames=None if max_frames <= 0 else int(max_frames),
-    )
-
-    with st.spinner("Running touch detection..."):
-        error_msg = None
-        try:
-            for result in gen:
-                left = result.left_touches
-                right = result.right_touches
-                total_touches = left + right
-                last_avg_speed = result.avg_speed_kmh
-                last_max_speed = result.max_speed_kmh
-                total_jumps = result.total_jumps
-                highest_jump_m = result.highest_jump_m
-                highest_jump_px = result.highest_jump_px
-                if result.shot_events is not None:
-                    shot_log = result.shot_events
-                shot_count = result.shot_count
-                total_time_sec = result.total_time_sec
-                total_distance_m = result.total_distance_m
-                peak_accel_mps2 = result.peak_accel_mps2
-                peak_decel_mps2 = result.peak_decel_mps2
-                processed_frames += 1
-
-                avg_speed_text = _format_speed(last_avg_speed, options.use_metric_display)
-                max_speed_text = _format_speed(last_max_speed, options.use_metric_display)
-                jump_height_text = "--"
-                if highest_jump_m is not None:
-                    jump_height_text = f"{highest_jump_m:.2f} m"
-                elif highest_jump_px is not None:
-                    jump_height_text = f"{highest_jump_px:.0f} px"
-                last_force_text = "--"
-                if shot_log:
-                    last_entry = shot_log[-1]
-                    last_type = last_entry.get("type", "pass").capitalize()
-                    force_kmh = last_entry.get("force_kmh")
-                    force_px_s = last_entry.get("force_px_s")
-                    if force_kmh is not None:
-                        last_force_text = f"{last_type} - {_format_speed(force_kmh, options.use_metric_display)}"
-                    elif force_px_s is not None:
-                        last_force_text = f"{last_type} - {force_px_s:.1f} px/s"
-                time_text = _format_duration(total_time_sec)
-                distance_text = _format_distance(total_distance_m, options.use_metric_display)
-                accel_text = _format_accel(peak_accel_mps2)
-                decel_text = _format_accel(peak_decel_mps2)
-                overlay_lines = []
-                metric_cards = []
-                
-                if "Touches" in report_sections:
-                    overlay_lines.append(f"Touches (L / R): {left} / {right}")
-                    overlay_lines.append(f"Total ball touches: {total_touches}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">👟</div>
-                            <div class="metric-label">Ball Touches</div>
-                            <div class="metric-value metric-value-highlight">{left} / {right}</div>
-                            <div class="metric-subvalue">Left / Right</div>
-                        </div>"""
-                    )
-                
-                if "Speed" in report_sections:
-                    overlay_lines.append(f"Player speed (avg / max): {avg_speed_text} / {max_speed_text}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">⚡</div>
-                            <div class="metric-label">Player Speed</div>
-                            <div class="metric-value">{avg_speed_text}</div>
-                            <div class="metric-subvalue">Max: {max_speed_text}</div>
-                        </div>"""
-                    )
-                
-                if "Jumps" in report_sections:
-                    overlay_lines.append(f"Jumps / Highest: {total_jumps} / {jump_height_text}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">🦘</div>
-                            <div class="metric-label">Jumps</div>
-                            <div class="metric-value">{total_jumps}</div>
-                            <div class="metric-subvalue">Max: {jump_height_text}</div>
-                        </div>"""
-                    )
-                
-                if "Shots" in report_sections:
-                    overlay_lines.append(f"Shots / Last force: {shot_count} / {last_force_text}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">🎯</div>
-                            <div class="metric-label">Shots</div>
-                            <div class="metric-value">{shot_count}</div>
-                            <div class="metric-subvalue">{last_force_text}</div>
-                        </div>"""
-                    )
-                
-                if "Time & Distance" in report_sections:
-                    overlay_lines.append(f"Time analyzed / Distance: {time_text} / {distance_text}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">🏃</div>
-                            <div class="metric-label">Distance</div>
-                            <div class="metric-value">{distance_text}</div>
-                            <div class="metric-subvalue">Time: {time_text}</div>
-                        </div>"""
-                    )
-                
-                if "Acceleration" in report_sections:
-                    overlay_lines.append(f"Accel / Decel (peak): {accel_text} / {decel_text}")
-                    metric_cards.append(
-                        f"""<div class="metric-card">
-                            <div class="metric-icon">📈</div>
-                            <div class="metric-label">Acceleration</div>
-                            <div class="metric-value">{accel_text}</div>
-                            <div class="metric-subvalue">Decel: {decel_text}</div>
-                        </div>"""
-                    )
-                
-                # Frame counter badge
-                if "Processing info" in report_sections:
-                    overlay_lines.append(f"Frame: {result.frame_idx}")
-                
-                # Render metrics grid
-                if metric_cards:
-                    grid_html = '<div class="metrics-grid">' + ''.join(metric_cards) + '</div>'
-                    if "Processing info" in report_sections:
-                        grid_html += f'<div style="text-align:right;margin-top:0.5rem;"><span style="background:rgba(34,211,238,0.1);color:#22d3ee;padding:0.25rem 0.75rem;border-radius:999px;font-size:0.8rem;font-weight:600;">Frame {result.frame_idx}</span></div>'
-                    stats_placeholder.markdown(grid_html, unsafe_allow_html=True)
-                else:
-                    stats_placeholder.empty()
-                overlay_frame = result.annotated.copy()
-                if overlay_lines:
-                    _draw_stats_overlay(overlay_frame, overlay_lines)
-                if video_writer is None:
-                    tmp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                    annotated_video_path = tmp_video.name
-                    tmp_video.close()
-                    video_writer = _init_video_writer(
-                        annotated_video_path,
-                        overlay_frame,
-                        output_fps,
-                    )
-                    if video_writer is None:
-                        Path(annotated_video_path).unlink(missing_ok=True)
-                        annotated_video_path = None
-                if video_writer is not None:
-                    video_writer.write(overlay_frame)
-
-                if result.avg_speed_kmh is not None:
-                    speed_points.append(
-                        {
-                            "frame": result.frame_idx,
-                            "avg_speed_kmh": result.avg_speed_kmh,
-                            "max_speed_kmh": result.max_speed_kmh,
-                        }
-                    )
-
-                if st.session_state.get("viz_toggle", True):
-                    caption = f"Frame {result.frame_idx}"
-                    frame_rgb = cv2.cvtColor(overlay_frame, cv2.COLOR_BGR2RGB)
-                    if st.session_state.get("fullscreen_toggle", False):
-                        frame_placeholder_side.empty()
-                        frame_placeholder_full.image(
-                            frame_rgb,
-                            caption=caption,
-                            channels="RGB",
-                            use_column_width=True,
-                        )
-                    else:
-                        frame_placeholder_full.empty()
-                        frame_placeholder_side.image(
-                            frame_rgb,
-                            caption=caption,
-                            channels="RGB",
-                            width=320,
-                        )
-
-                if total_frames:
-                    progress.progress(min(1.0, result.frame_idx / total_frames))
-        except Exception as exc:
-            error_msg = str(exc)
-        finally:
-            if video_writer is not None:
-                video_writer.release()
-            gen.close()
-        if error_msg:
-            if annotated_video_path:
-                Path(annotated_video_path).unlink(missing_ok=True)
-            st.error(f"Detection failed: {error_msg}")
+        if not analysis_cache:
             return
+        if cache_video_path and video_path and cache_video_path != video_path:
+            return
+        use_cache = True
+
+    if use_cache:
+        cached = analysis_cache if isinstance(analysis_cache, dict) else {}
+        left = cached.get("left", 0)
+        right = cached.get("right", 0)
+        processed_frames = cached.get("processed_frames", 0)
+        total_frames = cached.get("total_frames", total_frames)
+        input_fps = cached.get("input_fps")
+        display_stride_used = cached.get("display_stride", display_stride_used)
+        max_frames_used = cached.get("max_frames", max_frames_used)
+        last_avg_speed = cached.get("last_avg_speed")
+        last_max_speed = cached.get("last_max_speed")
+        speed_points = cached.get("speed_points", [])
+        total_jumps = cached.get("total_jumps", 0)
+        highest_jump_m = cached.get("highest_jump_m")
+        highest_jump_px = cached.get("highest_jump_px")
+        shot_log = cached.get("shot_log", [])
+        shot_count = cached.get("shot_count", len(shot_log))
+        total_time_sec = cached.get("total_time_sec")
+        total_distance_m = cached.get("total_distance_m")
+        peak_accel_mps2 = cached.get("peak_accel_mps2")
+        peak_decel_mps2 = cached.get("peak_decel_mps2")
+        annotated_video_path = cached.get("annotated_video_path")
+        if input_fps is None and video_path:
+            input_fps = _video_fps(video_path)
+    else:
+        if not video_path:
+            st.error("Please upload a video or select a sample file.")
+            return
+
+        total_frames = total_frames or _video_frame_count(video_path)
+        input_fps = _video_fps(video_path)
+        output_fps = max(1.0, input_fps / max(1, options.display_stride))
+        left = right = 0
+        processed_frames = 0
+        last_avg_speed = None
+        last_max_speed = None
+        speed_points = []
+        total_jumps = 0
+        highest_jump_m = None
+        highest_jump_px = None
+        shot_log = []
+        shot_count = 0
+        total_time_sec = None
+        total_distance_m = None
+        peak_accel_mps2 = None
+        peak_decel_mps2 = None
+        annotated_video_path = None
+        video_writer = None
+
+        gen = run_touch_detection(
+            video_path,
+            options=options,
+            max_frames=None if max_frames <= 0 else int(max_frames),
+        )
+
+        with st.spinner("Running touch detection..."):
+            error_msg = None
+            try:
+                for result in gen:
+                    left = result.left_touches
+                    right = result.right_touches
+                    total_touches = left + right
+                    last_avg_speed = result.avg_speed_kmh
+                    last_max_speed = result.max_speed_kmh
+                    total_jumps = result.total_jumps
+                    highest_jump_m = result.highest_jump_m
+                    highest_jump_px = result.highest_jump_px
+                    if result.shot_events is not None:
+                        shot_log = result.shot_events
+                    shot_count = result.shot_count
+                    total_time_sec = result.total_time_sec
+                    total_distance_m = result.total_distance_m
+                    peak_accel_mps2 = result.peak_accel_mps2
+                    peak_decel_mps2 = result.peak_decel_mps2
+                    processed_frames += 1
+
+                    avg_speed_text = _format_speed(last_avg_speed, options.use_metric_display)
+                    max_speed_text = _format_speed(last_max_speed, options.use_metric_display)
+                    jump_height_text = "--"
+                    if highest_jump_m is not None:
+                        jump_height_text = f"{highest_jump_m:.2f} m"
+                    elif highest_jump_px is not None:
+                        jump_height_text = f"{highest_jump_px:.0f} px"
+                    last_force_text = "--"
+                    if shot_log:
+                        last_entry = shot_log[-1]
+                        last_type = last_entry.get("type", "pass").capitalize()
+                        force_kmh = last_entry.get("force_kmh")
+                        force_px_s = last_entry.get("force_px_s")
+                        if force_kmh is not None:
+                            last_force_text = f"{last_type} - {_format_speed(force_kmh, options.use_metric_display)}"
+                        elif force_px_s is not None:
+                            last_force_text = f"{last_type} - {force_px_s:.1f} px/s"
+                    time_text = _format_duration(total_time_sec)
+                    distance_text = _format_distance(total_distance_m, options.use_metric_display)
+                    accel_text = _format_accel(peak_accel_mps2)
+                    decel_text = _format_accel(peak_decel_mps2)
+                    overlay_lines = []
+                    metric_cards = []
+                    
+                    if "Touches" in report_sections:
+                        overlay_lines.append(f"Touches (L / R): {left} / {right}")
+                        overlay_lines.append(f"Total ball touches: {total_touches}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">👟</div>
+                                <div class="metric-label">Ball Touches</div>
+                                <div class="metric-value metric-value-highlight">{left} / {right}</div>
+                                <div class="metric-subvalue">Left / Right</div>
+                            </div>"""
+                        )
+                    
+                    if "Speed" in report_sections:
+                        overlay_lines.append(f"Player speed (avg / max): {avg_speed_text} / {max_speed_text}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">⚡</div>
+                                <div class="metric-label">Player Speed</div>
+                                <div class="metric-value">{avg_speed_text}</div>
+                                <div class="metric-subvalue">Max: {max_speed_text}</div>
+                            </div>"""
+                        )
+                    
+                    if "Jumps" in report_sections:
+                        overlay_lines.append(f"Jumps / Highest: {total_jumps} / {jump_height_text}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">🦘</div>
+                                <div class="metric-label">Jumps</div>
+                                <div class="metric-value">{total_jumps}</div>
+                                <div class="metric-subvalue">Max: {jump_height_text}</div>
+                            </div>"""
+                        )
+                    
+                    if "Shots" in report_sections:
+                        overlay_lines.append(f"Shots / Last force: {shot_count} / {last_force_text}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">🎯</div>
+                                <div class="metric-label">Shots</div>
+                                <div class="metric-value">{shot_count}</div>
+                                <div class="metric-subvalue">{last_force_text}</div>
+                            </div>"""
+                        )
+                    
+                    if "Time & Distance" in report_sections:
+                        overlay_lines.append(f"Time analyzed / Distance: {time_text} / {distance_text}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">🏃</div>
+                                <div class="metric-label">Distance</div>
+                                <div class="metric-value">{distance_text}</div>
+                                <div class="metric-subvalue">Time: {time_text}</div>
+                            </div>"""
+                        )
+                    
+                    if "Acceleration" in report_sections:
+                        overlay_lines.append(f"Accel / Decel (peak): {accel_text} / {decel_text}")
+                        metric_cards.append(
+                            f"""<div class="metric-card">
+                                <div class="metric-icon">📈</div>
+                                <div class="metric-label">Acceleration</div>
+                                <div class="metric-value">{accel_text}</div>
+                                <div class="metric-subvalue">Decel: {decel_text}</div>
+                            </div>"""
+                        )
+                    
+                    # Frame counter badge
+                    if "Processing info" in report_sections:
+                        overlay_lines.append(f"Frame: {result.frame_idx}")
+                    
+                    # Render metrics grid
+                    if metric_cards:
+                        grid_html = '<div class="metrics-grid">' + ''.join(metric_cards) + '</div>'
+                        if "Processing info" in report_sections:
+                            grid_html += f'<div style="text-align:right;margin-top:0.5rem;"><span style="background:rgba(34,211,238,0.1);color:#22d3ee;padding:0.25rem 0.75rem;border-radius:999px;font-size:0.8rem;font-weight:600;">Frame {result.frame_idx}</span></div>'
+                        stats_placeholder.markdown(grid_html, unsafe_allow_html=True)
+                    else:
+                        stats_placeholder.empty()
+                    overlay_frame = result.annotated.copy()
+                    if overlay_lines:
+                        _draw_stats_overlay(overlay_frame, overlay_lines)
+                    if video_writer is None:
+                        tmp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                        annotated_video_path = tmp_video.name
+                        tmp_video.close()
+                        video_writer = _init_video_writer(
+                            annotated_video_path,
+                            overlay_frame,
+                            output_fps,
+                        )
+                        if video_writer is None:
+                            Path(annotated_video_path).unlink(missing_ok=True)
+                            annotated_video_path = None
+                    if video_writer is not None:
+                        video_writer.write(overlay_frame)
+
+                    if result.avg_speed_kmh is not None:
+                        speed_points.append(
+                            {
+                                "frame": result.frame_idx,
+                                "avg_speed_kmh": result.avg_speed_kmh,
+                                "max_speed_kmh": result.max_speed_kmh,
+                            }
+                        )
+
+                    if st.session_state.get("viz_toggle", True):
+                        caption = f"Frame {result.frame_idx}"
+                        frame_rgb = cv2.cvtColor(overlay_frame, cv2.COLOR_BGR2RGB)
+                        if st.session_state.get("fullscreen_toggle", False):
+                            frame_placeholder_side.empty()
+                            frame_placeholder_full.image(
+                                frame_rgb,
+                                caption=caption,
+                                channels="RGB",
+                                width=frame_rgb.shape[1],
+                            )
+                        else:
+                            frame_placeholder_full.empty()
+                            frame_placeholder_side.image(
+                                frame_rgb,
+                                caption=caption,
+                                channels="RGB",
+                                width=320,
+                            )
+
+                    if total_frames:
+                        progress.progress(min(1.0, result.frame_idx / total_frames))
+            except Exception as exc:
+                error_msg = str(exc)
+            finally:
+                if video_writer is not None:
+                    video_writer.release()
+                gen.close()
+            if error_msg:
+                if annotated_video_path:
+                    Path(annotated_video_path).unlink(missing_ok=True)
+                st.error(f"Detection failed: {error_msg}")
+                return
+
+        previous_cache = st.session_state.get("analysis_cache")
+        previous_path = None
+        if isinstance(previous_cache, dict):
+            previous_path = previous_cache.get("annotated_video_path")
+        if previous_path and previous_path != annotated_video_path:
+            Path(previous_path).unlink(missing_ok=True)
+        st.session_state["analysis_cache"] = {
+            "processed_frames": processed_frames,
+            "total_frames": total_frames,
+            "input_fps": input_fps,
+            "display_stride": options.display_stride,
+            "max_frames": max_frames_used,
+            "video_path": video_path,
+            "left": left,
+            "right": right,
+            "last_avg_speed": last_avg_speed,
+            "last_max_speed": last_max_speed,
+            "total_jumps": total_jumps,
+            "highest_jump_m": highest_jump_m,
+            "highest_jump_px": highest_jump_px,
+            "shot_log": shot_log,
+            "shot_count": shot_count,
+            "total_time_sec": total_time_sec,
+            "total_distance_m": total_distance_m,
+            "peak_accel_mps2": peak_accel_mps2,
+            "peak_decel_mps2": peak_decel_mps2,
+            "speed_points": speed_points,
+            "annotated_video_path": annotated_video_path,
+        }
 
     progress.progress(1.0)
     st.success("✅ Analysis Complete!")
+
+    report_data = {"report_sections": _report_section_list(report_sections)}
+    if "Processing info" in report_sections:
+        report_data["processing"] = {
+            "processed_frames": processed_frames,
+            "total_frames": total_frames or None,
+            "input_fps": input_fps,
+            "display_stride": display_stride_used,
+            "max_frames": max_frames_used,
+        }
+    if "Touches" in report_sections:
+        report_data["touches"] = {
+            "left": left,
+            "right": right,
+            "total": left + right,
+        }
+    if "Speed" in report_sections:
+        report_data["speed"] = {
+            "avg_kmh": last_avg_speed,
+            "max_kmh": last_max_speed,
+        }
+    if "Jumps" in report_sections:
+        report_data["jumps"] = {
+            "total": total_jumps,
+            "highest_m": highest_jump_m,
+            "highest_px": highest_jump_px,
+        }
+    if "Shots" in report_sections:
+        report_data["shots"] = {
+            "count": shot_count,
+        }
+    if "Time & Distance" in report_sections:
+        report_data["time_distance"] = {
+            "total_time_sec": total_time_sec,
+            "total_distance_m": total_distance_m,
+        }
+    if "Acceleration" in report_sections:
+        report_data["acceleration"] = {
+            "peak_accel_mps2": peak_accel_mps2,
+            "peak_decel_mps2": peak_decel_mps2,
+        }
+    if "Shot log" in report_sections:
+        report_data["shot_log"] = shot_log
+    if "Speed chart" in report_sections:
+        report_data["speed_points"] = speed_points
+
+    trimmed_report, truncation = _trim_report_for_context(
+        report_data, MAX_REPORT_CHARS
+    )
+    report_json = json.dumps(trimmed_report, indent=2, ensure_ascii=True)
+    st.session_state["report_json"] = report_json
+    if st.session_state.get("chat_video_path") != video_path:
+        st.session_state["chat_video_path"] = video_path
+        st.session_state["chat_messages"] = []
     
     # Results Section
     st.markdown(
@@ -1604,13 +1834,24 @@ def main():
         unsafe_allow_html=True,
     )
     
-    # Create tabs for organized results
-    tab_summary, tab_shots, tab_speed, tab_export = st.tabs([
-        "📊 Summary", "🎯 Shot Log", "📈 Speed Chart", "💾 Export"
-    ])
+    # Create a tab-like selector (persists across reruns)
+    tab_labels = [
+        "📊 Summary",
+        "🎯 Shot Log",
+        "📈 Speed Chart",
+        "💬 Coach Chat",
+        "💾 Export",
+    ]
+    active_tab = st.radio(
+        "Results",
+        tab_labels,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="results_tab",
+    )
     
     # Tab 1: Summary
-    with tab_summary:
+    if active_tab == "📊 Summary":
         completion_display = _format_duration(total_time_sec)
         distance_display = _format_distance(total_distance_m)
         accel_display = _format_accel(peak_accel_mps2)
@@ -1699,24 +1940,9 @@ def main():
         
         if summary_cards:
             st.markdown('<div class="metrics-grid">' + ''.join(summary_cards) + '</div>', unsafe_allow_html=True)
-        
-        # Download annotated video
-        if annotated_video_path:
-            annotated_file = Path(annotated_video_path)
-            if annotated_file.exists() and annotated_file.stat().st_size > 0:
-                st.markdown("<br>", unsafe_allow_html=True)
-                annotated_bytes = annotated_file.read_bytes()
-                annotated_file.unlink(missing_ok=True)
-                st.download_button(
-                    "📥 Download Annotated Video",
-                    data=annotated_bytes,
-                    file_name="annotated_video.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
-                )
     
     # Tab 2: Shot Log
-    with tab_shots:
+    elif active_tab == "🎯 Shot Log":
         if "Shot log" in report_sections:
             if shot_log:
                 st.markdown(f"**{shot_count}** shots/passes detected", unsafe_allow_html=True)
@@ -1758,7 +1984,7 @@ def main():
             st.info("ℹ️ Shot log not included in report options.")
     
     # Tab 3: Speed Chart
-    with tab_speed:
+    elif active_tab == "📈 Speed Chart":
         if "Speed chart" in report_sections:
             if speed_points:
                 st.markdown("**Player speed over time**")
@@ -1769,65 +1995,101 @@ def main():
         else:
             st.info("ℹ️ Speed chart not included in report options.")
     
-    # Tab 4: Export
-    with tab_export:
-        st.markdown("**Export Analysis Data**")
-        
-        report_data = {"report_sections": _report_section_list(report_sections)}
-        if "Processing info" in report_sections:
-            report_data["processing"] = {
-                "processed_frames": processed_frames,
-                "total_frames": total_frames or None,
-                "input_fps": input_fps,
-                "display_stride": options.display_stride,
-                "max_frames": None if max_frames <= 0 else int(max_frames),
-            }
-        if "Touches" in report_sections:
-            report_data["touches"] = {
-                "left": left,
-                "right": right,
-                "total": left + right,
-            }
-        if "Speed" in report_sections:
-            report_data["speed"] = {
-                "avg_kmh": last_avg_speed,
-                "max_kmh": last_max_speed,
-            }
-        if "Jumps" in report_sections:
-            report_data["jumps"] = {
-                "total": total_jumps,
-                "highest_m": highest_jump_m,
-                "highest_px": highest_jump_px,
-            }
-        if "Shots" in report_sections:
-            report_data["shots"] = {
-                "count": shot_count,
-            }
-        if "Time & Distance" in report_sections:
-            report_data["time_distance"] = {
-                "total_time_sec": total_time_sec,
-                "total_distance_m": total_distance_m,
-            }
-        if "Acceleration" in report_sections:
-            report_data["acceleration"] = {
-                "peak_accel_mps2": peak_accel_mps2,
-                "peak_decel_mps2": peak_decel_mps2,
-            }
-        if "Shot log" in report_sections:
-            report_data["shot_log"] = shot_log
-        if "Speed chart" in report_sections:
-            report_data["speed_points"] = speed_points
-        
-        trimmed_report, truncation = _trim_report_for_context(
-            report_data, MAX_REPORT_CHARS
+    # Tab 4: Coach Chat
+    elif active_tab == "💬 Coach Chat":
+        st.markdown("**Chat with your report**")
+        st.caption(f"Report context size: ~{_estimate_tokens(report_json)} tokens.")
+        if truncation:
+            st.warning("⚠️ Report JSON was trimmed to stay under ~100k tokens.")
+
+        prereq_error = _gemini_prereq_error()
+        if prereq_error:
+            st.info(prereq_error)
+
+        model = st.text_input(
+            "Gemini model",
+            value=st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL),
+            key="gemini_model",
         )
-        report_json = json.dumps(trimmed_report, indent=2, ensure_ascii=True)
+        temperature = st.slider(
+            "Response creativity",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.get("gemini_temperature", DEFAULT_GEMINI_TEMPERATURE),
+            step=0.05,
+            key="gemini_temperature",
+        )
+        max_output_tokens = st.number_input(
+            "Max response tokens",
+            min_value=128,
+            max_value=4096,
+            value=st.session_state.get("gemini_max_output_tokens", DEFAULT_GEMINI_MAX_OUTPUT_TOKENS),
+            step=128,
+            key="gemini_max_output_tokens",
+        )
+        if st.button("Clear chat", use_container_width=True):
+            st.session_state["chat_messages"] = []
+
+        messages = st.session_state.get("chat_messages", [])
+        for msg in messages:
+            with st.chat_message(msg.get("role", "assistant")):
+                st.markdown(msg.get("content", ""))
+
+        prompt = st.chat_input("Ask about this report")
+        if prompt:
+            if prereq_error:
+                st.error(prereq_error)
+            elif not model.strip():
+                st.error("Enter a Gemini model name to continue.")
+            else:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing report..."):
+                        response_text, error = _generate_gemini_response(
+                            report_json=report_json,
+                            user_message=prompt,
+                            history=messages,
+                            model=model.strip(),
+                            temperature=float(temperature),
+                            max_output_tokens=int(max_output_tokens),
+                        )
+                    if error:
+                        st.error(error)
+                    else:
+                        st.markdown(response_text)
+                        messages.append({"role": "user", "content": prompt})
+                        messages.append({"role": "assistant", "content": response_text})
+                        st.session_state["chat_messages"] = messages
+
+    # Tab 5: Export
+    elif active_tab == "💾 Export":
+        st.markdown("**Export Analysis Data**")
         
         if truncation:
             st.warning("⚠️ Report JSON was trimmed to stay under ~100k tokens.")
-        
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
+
+        annotated_bytes = None
+        annotated_ready = False
+        if annotated_video_path:
+            annotated_file = Path(annotated_video_path)
+            if annotated_file.exists() and annotated_file.stat().st_size > 0:
+                annotated_bytes = annotated_file.read_bytes()
+                annotated_ready = True
+
+        col_video, col_json = st.columns(2)
+        with col_video:
+            if annotated_ready:
+                st.download_button(
+                    "📥 Download Annotated Video",
+                    data=annotated_bytes,
+                    file_name="annotated_video.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+            else:
+                st.caption("Annotated video not available.")
+        with col_json:
             st.download_button(
                 "📥 Download Report JSON",
                 data=report_json,
@@ -1835,16 +2097,16 @@ def main():
                 mime="application/json",
                 use_container_width=True,
             )
-        with col_dl2:
-            if shot_log:
-                shot_csv = pd.DataFrame(shot_log).to_csv(index=False)
-                st.download_button(
-                    "📥 Download Shot Log CSV",
-                    data=shot_csv,
-                    file_name="shot_log.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+
+        if shot_log:
+            shot_csv = pd.DataFrame(shot_log).to_csv(index=False)
+            st.download_button(
+                "📥 Download Shot Log CSV",
+                data=shot_csv,
+                file_name="shot_log.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
         
         with st.expander("🔍 Preview JSON"):
             st.code(report_json, language="json")
