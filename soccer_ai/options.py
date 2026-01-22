@@ -27,6 +27,17 @@ class TouchOptions:
     extended_ground_multiplier: float = cfg.EXTENDED_GROUND_MULTIPLIER
     draw_ground_grid: bool = cfg.DRAW_GROUND_GRID
     ground_grid_spacing_m: float = cfg.GROUND_GRID_SPACING_M
+    grid_line_subdivisions: int = cfg.GRID_LINE_SUBDIVISIONS
+    show_grid_distance_markers: bool = cfg.SHOW_GRID_DISTANCE_MARKERS
+    # Accuracy improvements
+    min_movement_m: float = cfg.MIN_MOVEMENT_M
+    max_speed_gap_frames: int = cfg.MAX_SPEED_GAP_FRAMES
+    max_human_speed_mps: float = cfg.MAX_HUMAN_SPEED_MPS
+    max_ball_speed_mps: float = cfg.MAX_BALL_SPEED_MPS
+    use_ema_smoothing: bool = cfg.USE_EMA_SMOOTHING
+    ema_alpha: float = cfg.EMA_ALPHA
+    # Unit system
+    use_metric_display: bool = cfg.USE_METRIC_DISPLAY
 
 
 __all__ = ["TouchOptions"]

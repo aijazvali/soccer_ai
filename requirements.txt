@@ -1,4 +1,4 @@
-ultralytics==8.3.252
+ultralytics==8.4.7
 torch>=2.2.2
 torchvision>=0.15.0
 opencv-python==4.10.0.84
@@ -7,3 +7,4 @@ streamlit==1.52.2
 streamlit-drawable-canvas==0.9.3
 pillow>=9.0.0
 tqdm>=4.64.0
+streamlit-drawable-canvas

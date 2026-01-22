@@ -468,6 +468,7 @@ def run_touch_detection(
     ground_poly = None
     extended_ground_poly = None
     ground_grid_lines = []
+    grid_intersection_points = []  # Store (pixel_pos, field_x, field_y) for distance markers
     h_inv = None
     
     if calibration is not None:
@@ -515,6 +516,7 @@ def run_touch_detection(
             extended_ground_poly = cv2.perspectiveTransform(ext_field_pts, h_inv).reshape(-1, 2)
         
         # Compute grid lines for the extended ground plane
+        # Use subdivided polylines for accurate perspective rendering
         if opts.draw_ground_grid and h_inv is not None:
             mult = opts.extended_ground_multiplier
             spacing = opts.ground_grid_spacing_m
@@ -524,27 +526,83 @@ def run_touch_detection(
             ext_w = fw * mult
             ext_h = fh * mult
             
-            # Compute grid boundaries in field coords
+            # Compute grid boundaries in field coords (extended area)
             x_min = cx - ext_w / 2
             x_max = cx + ext_w / 2
             y_min = cy - ext_h / 2
             y_max = cy + ext_h / 2
             
-            # Vertical grid lines (constant X)
-            x = x_min
-            while x <= x_max:
-                line_field = np.array([[[x, y_min], [x, y_max]]], dtype=np.float32)
-                line_img = cv2.perspectiveTransform(line_field, h_inv).reshape(-1, 2)
-                ground_grid_lines.append(line_img)
+            # Number of subdivisions per line for perspective accuracy
+            num_subdivisions = opts.grid_line_subdivisions
+            
+            # Collect grid intersection points within the calibration rectangle
+            # These are used for distance markers
+            x_positions = []
+            x = 0.0
+            while x <= fw + 1e-6:
+                x_positions.append(x)
                 x += spacing
             
-            # Horizontal grid lines (constant Y)
-            y = y_min
-            while y <= y_max:
-                line_field = np.array([[[x_min, y], [x_max, y]]], dtype=np.float32)
-                line_img = cv2.perspectiveTransform(line_field, h_inv).reshape(-1, 2)
-                ground_grid_lines.append(line_img)
+            y_positions = []
+            y = 0.0
+            while y <= fh + 1e-6:
+                y_positions.append(y)
                 y += spacing
+            
+            # Generate intersection points for distance markers
+            for x_field in x_positions:
+                for y_field in y_positions:
+                    pt_field = np.array([[[x_field, y_field]]], dtype=np.float32)
+                    pt_img = cv2.perspectiveTransform(pt_field, h_inv).reshape(2)
+                    grid_intersection_points.append((pt_img, x_field, y_field))
+            
+            # Generate all X positions for vertical lines across the extended area
+            # Start from x_min and increment by spacing
+            x_grid_positions = []
+            # First, find the first grid line position >= x_min that aligns to spacing
+            first_x = spacing * math.ceil(x_min / spacing)
+            x = first_x
+            while x <= x_max + 1e-6:
+                x_grid_positions.append(x)
+                x += spacing
+            
+            # Generate all Y positions for horizontal lines across the extended area
+            y_grid_positions = []
+            first_y = spacing * math.ceil(y_min / spacing)
+            y = first_y
+            while y <= y_max + 1e-6:
+                y_grid_positions.append(y)
+                y += spacing
+            
+            # Vertical grid lines (constant X) - subdivided for perspective accuracy
+            for x in x_grid_positions:
+                y_values = np.linspace(y_min, y_max, num_subdivisions)
+                line_field_pts = np.array([[[x, yv] for yv in y_values]], dtype=np.float32)
+                line_img = cv2.perspectiveTransform(line_field_pts, h_inv).reshape(-1, 2)
+                ground_grid_lines.append(line_img)
+            
+            # Horizontal grid lines (constant Y) - subdivided for perspective accuracy
+            for y in y_grid_positions:
+                x_values = np.linspace(x_min, x_max, num_subdivisions)
+                line_field_pts = np.array([[[xv, y] for xv in x_values]], dtype=np.float32)
+                line_img = cv2.perspectiveTransform(line_field_pts, h_inv).reshape(-1, 2)
+                ground_grid_lines.append(line_img)
+            
+            # Add calibration rectangle boundary lines (0,0 to fw,fh) with thicker style
+            # These should align exactly with the marked calibration points
+            calib_boundary_lines = [
+                # Top edge: y=0
+                np.array([[[x_val, 0.0] for x_val in np.linspace(0, fw, num_subdivisions)]], dtype=np.float32),
+                # Bottom edge: y=fh
+                np.array([[[x_val, fh] for x_val in np.linspace(0, fw, num_subdivisions)]], dtype=np.float32),
+                # Left edge: x=0
+                np.array([[[0.0, y_val] for y_val in np.linspace(0, fh, num_subdivisions)]], dtype=np.float32),
+                # Right edge: x=fw
+                np.array([[[fw, y_val] for y_val in np.linspace(0, fh, num_subdivisions)]], dtype=np.float32),
+            ]
+            for line_field_pts in calib_boundary_lines:
+                line_img = cv2.perspectiveTransform(line_field_pts, h_inv).reshape(-1, 2)
+                ground_grid_lines.append(line_img)
 
     frames_required = max(1, int(round(cfg.CONTACT_SEC * fps)))
     cooldown_frames = max(1, int(round(cfg.COOLDOWN_SEC * fps)))
@@ -1003,42 +1061,68 @@ def run_touch_detection(
                             state.last_m_per_px = float(np.median(state.meters_per_px_history))
 
                 speed_kmh = None
+                speed_mps_display = None
                 if speed_anchor is not None:
                     speed_mps = None
                     speed_anchor_field = None
                     if use_homography and fps > 0:
                         speed_anchor_field = project_if_ready(speed_anchor)
 
+                    # Gap detection: reset tracking if player lost for too long
+                    gap_frames = frame_idx - state.last_speed_frame if state.last_speed_frame > 0 else 0
+                    if gap_frames > opts.max_speed_gap_frames:
+                        state.prev_speed_field = None
+                        state.prev_speed_point = None
+                        state.last_speed_mps = None
+                        state.speed_history.clear()
+
                     if speed_anchor_field is not None and fps > 0:
                         if state.prev_speed_field is not None and state.last_speed_frame > 0:
                             dt_frames = frame_idx - state.last_speed_frame
                             if dt_frames > 0:
                                 dist_m = dist(speed_anchor_field, state.prev_speed_field)
-                                total_distance_m += dist_m
-                                state.total_distance_m += dist_m
-                                distance_samples += 1
                                 dt_seconds = dt_frames / fps
                                 speed_mps = dist_m / dt_seconds
-                                if state.last_speed_mps is not None:
-                                    accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
-                                    if accel_mps2 >= 0:
-                                        state.peak_accel_mps2 = max(
-                                            state.peak_accel_mps2, accel_mps2
-                                        )
-                                        peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
-                                        accel_samples += 1
+                                
+                                # Outlier rejection: skip if speed is impossibly high
+                                if speed_mps > opts.max_human_speed_mps:
+                                    speed_mps = None
+                                elif dist_m >= opts.min_movement_m:
+                                    # Only count distance if above threshold (prevents jitter)
+                                    total_distance_m += dist_m
+                                    state.total_distance_m += dist_m
+                                    distance_samples += 1
+                                
+                                if speed_mps is not None:
+                                    if state.last_speed_mps is not None:
+                                        accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
+                                        if accel_mps2 >= 0:
+                                            state.peak_accel_mps2 = max(
+                                                state.peak_accel_mps2, accel_mps2
+                                            )
+                                            peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
+                                            accel_samples += 1
+                                        else:
+                                            decel_mps2 = -accel_mps2
+                                            state.peak_decel_mps2 = max(
+                                                state.peak_decel_mps2, decel_mps2
+                                            )
+                                            peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
+                                            decel_samples += 1
+                                    state.last_speed_mps = speed_mps
+                                    
+                                    # Smoothing: EMA or median
+                                    if opts.use_ema_smoothing:
+                                        if state.speed_kmh is not None:
+                                            speed_kmh = opts.ema_alpha * (speed_mps * 3.6) + (1 - opts.ema_alpha) * state.speed_kmh
+                                        else:
+                                            speed_kmh = speed_mps * 3.6
                                     else:
-                                        decel_mps2 = -accel_mps2
-                                        state.peak_decel_mps2 = max(
-                                            state.peak_decel_mps2, decel_mps2
-                                        )
-                                        peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
-                                        decel_samples += 1
-                                state.last_speed_mps = speed_mps
-                                state.speed_history.append(speed_mps * 3.6)
-                                if state.speed_history:
-                                    speed_kmh = float(np.median(state.speed_history))
+                                        state.speed_history.append(speed_mps * 3.6)
+                                        if state.speed_history:
+                                            speed_kmh = float(np.median(state.speed_history))
                                     state.speed_kmh = speed_kmh
+                                    speed_mps_display = speed_mps
                         if speed_mps is None:
                             state.last_speed_mps = None
                         state.prev_speed_field = speed_anchor_field
@@ -1050,31 +1134,47 @@ def run_touch_detection(
                             if dt_frames > 0:
                                 dist_px = dist(speed_anchor, state.prev_speed_point)
                                 dist_m = dist_px * meters_per_pixel
-                                total_distance_m += dist_m
-                                state.total_distance_m += dist_m
-                                distance_samples += 1
                                 dt_seconds = dt_frames / fps
                                 speed_mps = dist_m / dt_seconds
-                                if state.last_speed_mps is not None:
-                                    accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
-                                    if accel_mps2 >= 0:
-                                        state.peak_accel_mps2 = max(
-                                            state.peak_accel_mps2, accel_mps2
-                                        )
-                                        peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
-                                        accel_samples += 1
+                                
+                                # Outlier rejection
+                                if speed_mps > opts.max_human_speed_mps:
+                                    speed_mps = None
+                                elif dist_m >= opts.min_movement_m:
+                                    total_distance_m += dist_m
+                                    state.total_distance_m += dist_m
+                                    distance_samples += 1
+                                
+                                if speed_mps is not None:
+                                    if state.last_speed_mps is not None:
+                                        accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
+                                        if accel_mps2 >= 0:
+                                            state.peak_accel_mps2 = max(
+                                                state.peak_accel_mps2, accel_mps2
+                                            )
+                                            peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
+                                            accel_samples += 1
+                                        else:
+                                            decel_mps2 = -accel_mps2
+                                            state.peak_decel_mps2 = max(
+                                                state.peak_decel_mps2, decel_mps2
+                                            )
+                                            peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
+                                            decel_samples += 1
+                                    state.last_speed_mps = speed_mps
+                                    
+                                    # Smoothing: EMA or median
+                                    if opts.use_ema_smoothing:
+                                        if state.speed_kmh is not None:
+                                            speed_kmh = opts.ema_alpha * (speed_mps * 3.6) + (1 - opts.ema_alpha) * state.speed_kmh
+                                        else:
+                                            speed_kmh = speed_mps * 3.6
                                     else:
-                                        decel_mps2 = -accel_mps2
-                                        state.peak_decel_mps2 = max(
-                                            state.peak_decel_mps2, decel_mps2
-                                        )
-                                        peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
-                                        decel_samples += 1
-                                state.last_speed_mps = speed_mps
-                                state.speed_history.append(speed_mps * 3.6)
-                                if state.speed_history:
-                                    speed_kmh = float(np.median(state.speed_history))
+                                        state.speed_history.append(speed_mps * 3.6)
+                                        if state.speed_history:
+                                            speed_kmh = float(np.median(state.speed_history))
                                     state.speed_kmh = speed_kmh
+                                    speed_mps_display = speed_mps
                         if speed_mps is None:
                             state.last_speed_mps = None
                         state.prev_speed_point = speed_anchor
@@ -1611,12 +1711,13 @@ def run_touch_detection(
                 cv2.polylines(annotated, [ext_pts], True, (100, 200, 100), 1)
             
             # Draw grid lines on the ground plane
+            # Grid lines are now polylines with multiple points for perspective accuracy
             if ground_grid_lines:
                 for line in ground_grid_lines:
-                    pt1 = tuple(np.round(line[0]).astype(int))
-                    pt2 = tuple(np.round(line[1]).astype(int))
-                    # Draw grid lines in subtle green
-                    cv2.line(annotated, pt1, pt2, (80, 150, 80), 1)
+                    # Convert to integer points for drawing
+                    pts = np.round(line).astype(np.int32).reshape(-1, 1, 2)
+                    # Draw as polyline to follow perspective accurately
+                    cv2.polylines(annotated, [pts], isClosed=False, color=(80, 150, 80), thickness=1)
             
             # Draw calibration rectangle (on top of grid)
             if ground_poly is not None:
@@ -1625,9 +1726,66 @@ def run_touch_detection(
                 cv2.fillPoly(overlay, [pts], (0, 120, 255))
                 cv2.addWeighted(overlay, 0.25, annotated, 0.75, 0.0, annotated)
                 cv2.polylines(annotated, [pts], True, (0, 255, 255), 2)
-                for pt in pts:
-                    cv2.circle(annotated, tuple(pt[0]), 4, (0, 255, 255), -1)
-
+                
+                # Draw corner markers with field coordinate labels
+                corner_labels = []
+                if calibration is not None:
+                    fw = calibration.field_width_m
+                    fh = calibration.field_height_m
+                    corner_labels = [
+                        f"(0,0)",           # top-left
+                        f"({fw:.0f},0)",    # top-right
+                        f"({fw:.0f},{fh:.0f})",  # bottom-right
+                        f"(0,{fh:.0f})",    # bottom-left
+                    ]
+                
+                for i, pt in enumerate(pts):
+                    pt_tuple = tuple(pt[0])
+                    cv2.circle(annotated, pt_tuple, 6, (0, 255, 255), -1)
+                    cv2.circle(annotated, pt_tuple, 8, (0, 0, 0), 2)
+                    # Draw corner label
+                    if i < len(corner_labels):
+                        label_pos = (pt_tuple[0] + 10, pt_tuple[1] - 10)
+                        cv2.putText(
+                            annotated,
+                            corner_labels[i],
+                            label_pos,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            2,
+                        )
+            
+            # Draw distance markers at grid intersections (within calibration rectangle)
+            if opts.show_grid_distance_markers and grid_intersection_points:
+                for pt_img, x_field, y_field in grid_intersection_points:
+                    # Skip corner points (already drawn with labels)
+                    if calibration is not None:
+                        fw = calibration.field_width_m
+                        fh = calibration.field_height_m
+                        is_corner = (
+                            (abs(x_field) < 0.01 and abs(y_field) < 0.01) or
+                            (abs(x_field - fw) < 0.01 and abs(y_field) < 0.01) or
+                            (abs(x_field - fw) < 0.01 and abs(y_field - fh) < 0.01) or
+                            (abs(x_field) < 0.01 and abs(y_field - fh) < 0.01)
+                        )
+                        if is_corner:
+                            continue
+                    
+                    pt_int = (int(round(pt_img[0])), int(round(pt_img[1])))
+                    # Draw small circle at intersection
+                    cv2.circle(annotated, pt_int, 3, (255, 200, 100), -1)
+                    # Draw distance label
+                    label = f"({x_field:.0f},{y_field:.0f})"
+                    cv2.putText(
+                        annotated,
+                        label,
+                        (pt_int[0] + 5, pt_int[1] - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.35,
+                        (255, 200, 100),
+                        1,
+                    )
             avg_power_display = shot_power_sum / shot_power_samples if shot_power_samples else None
 
             if last_overlay and frame_idx <= overlay_expires:

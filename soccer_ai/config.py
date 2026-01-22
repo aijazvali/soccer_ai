@@ -34,6 +34,8 @@ DRAW_EXTENDED_GROUND = True  # Draw the extrapolated ground plane beyond calibra
 EXTENDED_GROUND_MULTIPLIER = 3.0  # How many times larger than calibration rect to extend
 DRAW_GROUND_GRID = True  # Draw grid lines on the ground plane
 GROUND_GRID_SPACING_M = 5.0  # Spacing between grid lines in meters
+GRID_LINE_SUBDIVISIONS = 20  # Number of subdivisions per grid line for perspective accuracy
+SHOW_GRID_DISTANCE_MARKERS = True  # Show distance markers at grid intersections
 
 # Touch timing (seconds; translated to frames at runtime)
 CONTACT_SEC = 0.07
@@ -76,7 +78,18 @@ SHOW_PLAYER_SPEED = True
 PLAYER_REF_HEIGHT_M = 1.70
 HIP_TO_ANKLE_RATIO = 0.53
 HIP_ANKLE_MIN_PX = 30.0
-PLAYER_SPEED_SMOOTHING = 5
+PLAYER_SPEED_SMOOTHING = 7  # Increased from 5 for better stability
+
+# Accuracy improvements
+MIN_MOVEMENT_M = 0.03  # Minimum movement to count as distance (prevents jitter accumulation)
+MAX_SPEED_GAP_FRAMES = 5  # Reset speed tracking if player lost for this many frames
+MAX_HUMAN_SPEED_MPS = 12.0  # Maximum realistic human sprint speed (~43 km/h, Usain Bolt peak)
+MAX_BALL_SPEED_MPS = 50.0  # Maximum realistic ball speed (~180 km/h for hard shots)
+USE_EMA_SMOOTHING = True  # Use Exponential Moving Average instead of median
+EMA_ALPHA = 0.3  # EMA smoothing factor (0.1=very smooth, 0.5=more responsive)
+
+# Unit system toggle
+USE_METRIC_DISPLAY = True  # True = m/s and meters, False = km/h and km
 # Passing / shooting heuristics
 PASS_MIN_SPEED_PX_S = 90.0
 SHOT_MIN_SPEED_PX_S = 140.0

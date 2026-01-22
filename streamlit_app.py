@@ -16,36 +16,472 @@ from soccer_ai.options import TouchOptions
 from soccer_ai.pipelines import run_touch_detection
 
 
-st.set_page_config(page_title="Soccer Touch Detection", layout="wide")
+st.set_page_config(
+    page_title="Soccer AI - Performance Analysis",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# Professional Design System CSS
 st.markdown(
     """
     <style>
-    body {
-        background: radial-gradient(circle at 20% 20%, #0f172a 0, #0b1020 40%, #070b17 100%);
-        color: #e2e8f0;
+    /* ===== GOOGLE FONTS ===== */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    
+    /* ===== ROOT VARIABLES ===== */
+    :root {
+        --bg-primary: #0a0f1a;
+        --bg-secondary: #0d1321;
+        --bg-card: rgba(255, 255, 255, 0.03);
+        --bg-card-hover: rgba(255, 255, 255, 0.06);
+        --border-subtle: rgba(255, 255, 255, 0.06);
+        --border-accent: rgba(34, 211, 238, 0.3);
+        --text-primary: #f1f5f9;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+        --accent-cyan: #22d3ee;
+        --accent-indigo: #818cf8;
+        --accent-purple: #a78bfa;
+        --gradient-primary: linear-gradient(135deg, #22d3ee 0%, #6366f1 50%, #a78bfa 100%);
+        --gradient-button: linear-gradient(135deg, #22d3ee 0%, #6366f1 100%);
+        --shadow-glow: 0 0 40px rgba(34, 211, 238, 0.15);
+        --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+        --radius-sm: 8px;
+        --radius-md: 12px;
+        --radius-lg: 16px;
+        --radius-xl: 20px;
     }
+    
+    /* ===== GLOBAL STYLES ===== */
+    .stApp {
+        background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
+        padding: 2rem 3rem 3rem 3rem;
+        max-width: 1400px;
     }
-    .stButton>button {
-        background: linear-gradient(120deg, #22d3ee, #6366f1);
-        color: white;
-        border: none;
-        padding: 0.6rem 1.1rem;
-        border-radius: 12px;
+    
+    /* ===== HEADER BRANDING ===== */
+    .header-container {
+        background: var(--bg-card);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-xl);
+        padding: 1.5rem 2rem;
+        margin-bottom: 2rem;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .header-container::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: var(--gradient-primary);
+    }
+    
+    .header-title {
+        font-size: 2rem;
+        font-weight: 800;
+        background: var(--gradient-primary);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+    
+    .header-subtitle {
+        color: var(--text-secondary);
+        font-size: 1rem;
+        font-weight: 400;
+        margin-top: 0.25rem;
+    }
+    
+    .version-badge {
+        display: inline-block;
+        background: var(--bg-card-hover);
+        color: var(--accent-cyan);
+        font-size: 0.75rem;
         font-weight: 600;
-        box-shadow: 0 10px 30px rgba(99,102,241,0.25);
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-accent);
+        margin-left: 1rem;
     }
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #22d3ee, #6366f1);
+    
+    /* ===== SECTION CONTAINERS ===== */
+    .section-container {
+        background: var(--bg-card);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        transition: all 0.3s ease;
     }
+    
+    .section-container:hover {
+        border-color: var(--border-accent);
+        box-shadow: var(--shadow-glow);
+    }
+    
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 1rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+    
+    .section-icon {
+        font-size: 1.25rem;
+    }
+    
+    /* ===== METRIC CARDS GRID ===== */
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    
     .metric-card {
-        padding: 1rem 1.2rem;
-        background: rgba(255,255,255,0.04);
-        border-radius: 14px;
-        border: 1px solid rgba(255,255,255,0.05);
+        background: var(--bg-card);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        padding: 1.25rem;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .metric-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 3px;
+        height: 100%;
+        background: var(--gradient-primary);
+        opacity: 0;
+        transition: opacity 0.3s ease;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--border-accent);
+        box-shadow: 0 12px 40px rgba(34, 211, 238, 0.15);
+    }
+    
+    .metric-card:hover::before {
+        opacity: 1;
+    }
+    
+    .metric-icon {
+        font-size: 1.5rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .metric-label {
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 0.25rem;
+    }
+    
+    .metric-value {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        line-height: 1.2;
+    }
+    
+    .metric-value-highlight {
+        background: var(--gradient-primary);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    
+    .metric-subvalue {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-top: 0.25rem;
+    }
+    
+    /* ===== BUTTONS ===== */
+    .stButton > button {
+        background: var(--gradient-button) !important;
+        color: white !important;
+        border: none !important;
+        padding: 0.75rem 1.5rem !important;
+        border-radius: var(--radius-md) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        letter-spacing: 0.3px !important;
+        box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35) !important;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 12px 32px rgba(99, 102, 241, 0.45) !important;
+    }
+    
+    .stButton > button:active {
+        transform: translateY(0) !important;
+    }
+    
+    /* ===== DOWNLOAD BUTTON ===== */
+    .stDownloadButton > button {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-accent) !important;
+        color: var(--accent-cyan) !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .stDownloadButton > button:hover {
+        background: rgba(34, 211, 238, 0.1) !important;
+        box-shadow: 0 4px 16px rgba(34, 211, 238, 0.2) !important;
+    }
+    
+    /* ===== PROGRESS BAR ===== */
+    .stProgress > div > div > div {
+        background: var(--gradient-primary) !important;
+        border-radius: 999px !important;
+    }
+    
+    .stProgress > div > div {
+        background: var(--bg-card) !important;
+        border-radius: 999px !important;
+    }
+    
+    /* ===== FILE UPLOADER ===== */
+    .stFileUploader > div {
+        background: var(--bg-card) !important;
+        border: 2px dashed var(--border-subtle) !important;
+        border-radius: var(--radius-lg) !important;
+        padding: 2rem !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .stFileUploader > div:hover {
+        border-color: var(--accent-cyan) !important;
+        background: rgba(34, 211, 238, 0.03) !important;
+    }
+    
+    /* ===== SIDEBAR ===== */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d1525 0%, #0a1018 100%) !important;
+        border-right: 1px solid var(--border-subtle) !important;
+    }
+    
+    [data-testid="stSidebar"] .block-container {
+        padding: 1.5rem 1rem !important;
+    }
+    
+    .sidebar-section {
+        background: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .sidebar-section-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--accent-cyan);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    /* ===== EXPANDER ===== */
+    .streamlit-expanderHeader {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: var(--radius-md) !important;
+        font-weight: 600 !important;
+        color: var(--text-primary) !important;
+    }
+    
+    .streamlit-expanderContent {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-top: none !important;
+        border-radius: 0 0 var(--radius-md) var(--radius-md) !important;
+    }
+    
+    /* ===== SELECTBOX & INPUTS ===== */
+    .stSelectbox > div > div,
+    .stNumberInput > div > div > input,
+    .stTextInput > div > div > input {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: var(--radius-sm) !important;
+        color: var(--text-primary) !important;
+    }
+    
+    .stSelectbox > div > div:hover,
+    .stNumberInput > div > div > input:hover,
+    .stTextInput > div > div > input:hover {
+        border-color: var(--accent-cyan) !important;
+    }
+    
+    /* ===== CHECKBOX ===== */
+    .stCheckbox > label > span {
+        color: var(--text-primary) !important;
+    }
+    
+    /* ===== TABS ===== */
+    .stTabs [data-baseweb="tab-list"] {
+        background: var(--bg-card) !important;
+        border-radius: var(--radius-md) !important;
+        padding: 0.25rem !important;
+        gap: 0.25rem !important;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent !important;
+        color: var(--text-secondary) !important;
+        border-radius: var(--radius-sm) !important;
+        font-weight: 500 !important;
+        padding: 0.5rem 1rem !important;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: var(--gradient-button) !important;
+        color: white !important;
+    }
+    
+    /* ===== DATAFRAME ===== */
+    .stDataFrame {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: var(--radius-md) !important;
+    }
+    
+    /* ===== SUCCESS/ERROR/WARNING ===== */
+    .stSuccess {
+        background: rgba(34, 197, 94, 0.1) !important;
+        border: 1px solid rgba(34, 197, 94, 0.3) !important;
+        border-radius: var(--radius-md) !important;
+    }
+    
+    .stError {
+        background: rgba(239, 68, 68, 0.1) !important;
+        border: 1px solid rgba(239, 68, 68, 0.3) !important;
+        border-radius: var(--radius-md) !important;
+    }
+    
+    .stWarning {
+        background: rgba(251, 191, 36, 0.1) !important;
+        border: 1px solid rgba(251, 191, 36, 0.3) !important;
+        border-radius: var(--radius-md) !important;
+    }
+    
+    /* ===== SLIDER ===== */
+    .stSlider > div > div > div {
+        background: var(--gradient-primary) !important;
+    }
+    
+    /* ===== SPINNER ===== */
+    .stSpinner > div {
+        border-top-color: var(--accent-cyan) !important;
+    }
+    
+    /* ===== CHARTS ===== */
+    .stPlotlyChart, .stLineChart, .stAreaChart {
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: var(--radius-lg) !important;
+        padding: 1rem !important;
+    }
+    
+    /* ===== VIDEO PREVIEW ===== */
+    .video-preview-container {
+        background: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        padding: 1rem;
+        position: relative;
+    }
+    
+    .video-preview-container img {
+        border-radius: var(--radius-md);
+    }
+    
+    /* ===== STATUS INDICATOR ===== */
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 0.5rem;
+        animation: pulse 2s infinite;
+    }
+    
+    .status-dot.active {
+        background: #22c55e;
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+    }
+    
+    .status-dot.processing {
+        background: var(--accent-cyan);
+        box-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+    }
+    
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    
+    /* ===== HIDE STREAMLIT BRANDING ===== */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* ===== CUSTOM SCROLLBAR ===== */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+        background: var(--bg-primary);
+    }
+    
+    ::-webkit-scrollbar-thumb {
+        background: var(--border-subtle);
+        border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-muted);
     }
     </style>
     """,
@@ -167,18 +603,48 @@ def _format_duration(seconds: Optional[float]) -> str:
     return f"{hours:d}h {minutes:02d}m"
 
 
-def _format_distance(meters: Optional[float]) -> str:
+def _format_distance(meters: Optional[float], use_metric: bool = True) -> str:
     if meters is None or meters < 0:
         return "--"
-    if meters >= 1000:
-        return f"{meters / 1000:.2f} km"
-    return f"{meters:.1f} m"
+    if use_metric:
+        # Display in meters
+        if meters >= 1000:
+            return f"{meters:.0f} m"
+        return f"{meters:.1f} m"
+    else:
+        # Display in km
+        if meters >= 1000:
+            return f"{meters / 1000:.2f} km"
+        return f"{meters:.0f} m"
+
+
+def _format_speed(speed_kmh: Optional[float], use_metric: bool = True) -> str:
+    """Format speed with unit toggle. Input is always in km/h."""
+    if speed_kmh is None:
+        return "--"
+    if use_metric:
+        # Convert to m/s
+        speed_mps = speed_kmh / 3.6
+        return f"{speed_mps:.1f} m/s"
+    else:
+        return f"{speed_kmh:.1f} km/h"
+
+
+def _format_speed_mps(speed_mps: Optional[float], use_metric: bool = True) -> str:
+    """Format speed with unit toggle. Input is in m/s."""
+    if speed_mps is None:
+        return "--"
+    if use_metric:
+        return f"{speed_mps:.1f} m/s"
+    else:
+        speed_kmh = speed_mps * 3.6
+        return f"{speed_kmh:.1f} km/h"
 
 
 def _format_accel(accel: Optional[float]) -> str:
     if accel is None:
         return "--"
-    return f"{accel:.2f} m/s^2"
+    return f"{accel:.2f} m/s²"
 
 
 def _draw_stats_overlay(
@@ -414,104 +880,180 @@ def _trim_report_for_context(report_data: dict, max_chars: int) -> tuple[dict, O
 
 
 def sidebar_options(calibration_default: Optional[str] = None) -> TouchOptions:
-    st.sidebar.header("Models")
-    det_options, pose_options = _list_model_options()
-    det_weights = st.sidebar.selectbox(
-        "Detection weights",
-        options=det_options,
-        index=_default_index(det_options, Path(cfg.DETECTOR_WEIGHTS).name),
-    )
-    pose_weights = st.sidebar.selectbox(
-        "Pose weights",
-        options=pose_options,
-        index=_default_index(pose_options, Path(cfg.POSE_WEIGHTS).name),
-    )
-
-    st.sidebar.header("Visualization")
-    draw_vector = st.sidebar.checkbox("Draw ball vector", value=cfg.DRAW_BALL_VECTOR)
-    vector_scale = st.sidebar.slider(
-        "Vector scale",
-        min_value=4.0,
-        max_value=24.0,
-        value=float(cfg.BALL_VECTOR_SCALE),
-        step=1.0,
-    )
-    show_speed = st.sidebar.checkbox("Show ball speed", value=cfg.SHOW_BALL_SPEED)
-    show_player_speed = st.sidebar.checkbox(
-        "Show player speed", value=cfg.SHOW_PLAYER_SPEED
-    )
-    show_components = st.sidebar.checkbox(
-        "Show velocity components", value=cfg.SHOW_BALL_COMPONENTS
+    # Sidebar branding
+    st.sidebar.markdown(
+        """
+        <div style="text-align:center;padding:1rem 0 1.5rem 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:1rem;">
+            <div style="font-size:1.5rem;">⚽</div>
+            <div style="font-size:0.9rem;font-weight:600;color:#f1f5f9;">Soccer AI</div>
+            <div style="font-size:0.7rem;color:#64748b;">Settings</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     
-    st.sidebar.subheader("Ground Plane Overlay")
-    draw_extended_ground = st.sidebar.checkbox(
-        "Draw extended ground plane",
-        value=cfg.DRAW_EXTENDED_GROUND,
-        help="Show the extrapolated ground area beyond the calibration rectangle.",
-    )
-    extended_ground_multiplier = st.sidebar.slider(
-        "Extended area multiplier",
-        min_value=1.0,
-        max_value=5.0,
-        value=float(cfg.EXTENDED_GROUND_MULTIPLIER),
-        step=0.5,
-        help="How many times larger than the calibration rectangle to extend.",
-    )
-    draw_ground_grid = st.sidebar.checkbox(
-        "Draw ground grid",
-        value=cfg.DRAW_GROUND_GRID,
-        help="Show grid lines on the ground plane to visualize perspective.",
-    )
-    ground_grid_spacing = st.sidebar.slider(
-        "Grid spacing (meters)",
-        min_value=1.0,
-        max_value=10.0,
-        value=float(cfg.GROUND_GRID_SPACING_M),
-        step=0.5,
-        help="Distance between grid lines in meters.",
-    )
+    # Models Section
+    with st.sidebar.expander("🤖 Models", expanded=True):
+        det_options, pose_options = _list_model_options()
+        det_weights = st.selectbox(
+            "Detection weights",
+            options=det_options,
+            index=_default_index(det_options, Path(cfg.DETECTOR_WEIGHTS).name),
+        )
+        pose_weights = st.selectbox(
+            "Pose weights",
+            options=pose_options,
+            index=_default_index(pose_options, Path(cfg.POSE_WEIGHTS).name),
+        )
+    
+    # Visualization Section
+    with st.sidebar.expander("🎨 Visualization", expanded=True):
+        draw_vector = st.checkbox("Draw ball vector", value=cfg.DRAW_BALL_VECTOR)
+        vector_scale = st.slider(
+            "Vector scale",
+            min_value=4.0,
+            max_value=24.0,
+            value=float(cfg.BALL_VECTOR_SCALE),
+            step=1.0,
+        )
+        show_speed = st.checkbox("Show ball speed", value=cfg.SHOW_BALL_SPEED)
+        show_player_speed = st.checkbox("Show player speed", value=cfg.SHOW_PLAYER_SPEED)
+        show_components = st.checkbox("Show velocity components", value=cfg.SHOW_BALL_COMPONENTS)
+    
+    # Ground Plane Section
+    with st.sidebar.expander("🗺️ Ground Plane", expanded=False):
+        draw_extended_ground = st.checkbox(
+            "Draw extended ground plane",
+            value=cfg.DRAW_EXTENDED_GROUND,
+            help="Show the extrapolated ground area beyond the calibration rectangle.",
+        )
+        extended_ground_multiplier = st.slider(
+            "Extended area multiplier",
+            min_value=1.0,
+            max_value=5.0,
+            value=float(cfg.EXTENDED_GROUND_MULTIPLIER),
+            step=0.5,
+            help="How many times larger than the calibration rectangle to extend.",
+        )
+        draw_ground_grid = st.checkbox(
+            "Draw ground grid",
+            value=cfg.DRAW_GROUND_GRID,
+            help="Show grid lines on the ground plane to visualize perspective.",
+        )
+        ground_grid_spacing = st.slider(
+            "Grid spacing (meters)",
+            min_value=1.0,
+            max_value=10.0,
+            value=float(cfg.GROUND_GRID_SPACING_M),
+            step=0.5,
+            help="Distance between grid lines in meters.",
+        )
+        grid_subdivisions = st.slider(
+            "Grid line subdivisions",
+            min_value=5,
+            max_value=50,
+            value=int(cfg.GRID_LINE_SUBDIVISIONS),
+            step=5,
+            help="Higher values = smoother perspective curves but slower rendering.",
+        )
+        show_distance_markers = st.checkbox(
+            "Show distance markers",
+            value=cfg.SHOW_GRID_DISTANCE_MARKERS,
+            help="Display field coordinates at grid intersections for accuracy verification.",
+        )
+    
+    # Touch Heuristics Section
+    with st.sidebar.expander("⚽ Touch Detection", expanded=False):
+        event_touch_enabled = st.checkbox(
+            "Use event-touch heuristic", value=cfg.EVENT_TOUCH_ENABLED
+        )
+        event_touch_dist_ratio = st.slider(
+            "Event-touch distance ratio",
+            min_value=0.8,
+            max_value=2.0,
+            value=float(cfg.EVENT_TOUCH_DIST_RATIO),
+            step=0.05,
+        )
+    
+    # Calibration Section
+    with st.sidebar.expander("📐 Calibration", expanded=False):
+        calibration_file = st.file_uploader(
+            "Upload calibration (JSON)",
+            type=["json"],
+            help="Upload the JSON produced by the cone calibration step.",
+        )
+        calibration_path = None
+        if calibration_file is not None:
+            tmp_calib = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            tmp_calib.write(calibration_file.read())
+            tmp_calib.close()
+            calibration_path = tmp_calib.name
+        elif calibration_default:
+            calibration_path = calibration_default
 
-    st.sidebar.header("Touch heuristics")
-    event_touch_enabled = st.sidebar.checkbox(
-        "Use event-touch heuristic", value=cfg.EVENT_TOUCH_ENABLED
-    )
-    event_touch_dist_ratio = st.sidebar.slider(
-        "Event-touch distance ratio",
-        min_value=0.8,
-        max_value=2.0,
-        value=float(cfg.EVENT_TOUCH_DIST_RATIO),
-        step=0.05,
-    )
+        if calibration_path:
+            st.success(f"✓ {Path(calibration_path).name}")
 
-    st.sidebar.header("Calibration")
-    calibration_file = st.sidebar.file_uploader(
-        "Cone calibration (JSON)",
-        type=["json"],
-        help="Upload the JSON produced by the cone calibration step.",
-    )
-    calibration_path = None
-    if calibration_file is not None:
-        tmp_calib = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-        tmp_calib.write(calibration_file.read())
-        tmp_calib.close()
-        calibration_path = tmp_calib.name
-    elif calibration_default:
-        calibration_path = calibration_default
-
-    if calibration_path:
-        st.sidebar.caption(f"Using calibration: {Path(calibration_path).name}")
-
-    use_homography = st.sidebar.checkbox(
-        "Use homography for calculations",
-        value=cfg.USE_HOMOGRAPHY,
-        help="Toggle between homography-based meters and pixel logic.",
-    )
-
-    st.sidebar.header("Performance")
-    display_stride = st.sidebar.slider(
-        "Display stride (emit every Nth frame)", min_value=1, max_value=5, value=1
-    )
+        use_homography = st.checkbox(
+            "Use homography for calculations",
+            value=cfg.USE_HOMOGRAPHY,
+            help="Toggle between homography-based meters and pixel logic.",
+        )
+    
+    # Performance Section
+    with st.sidebar.expander("⚡ Performance", expanded=False):
+        display_stride = st.slider(
+            "Display stride (emit every Nth frame)", min_value=1, max_value=5, value=1
+        )
+    
+    # Accuracy Settings Section
+    with st.sidebar.expander("🎯 Accuracy Settings", expanded=False):
+        use_ema = st.checkbox(
+            "Use EMA smoothing",
+            value=cfg.USE_EMA_SMOOTHING,
+            help="Exponential Moving Average is more responsive than median smoothing.",
+        )
+        ema_alpha = st.slider(
+            "EMA smoothing factor",
+            min_value=0.1,
+            max_value=0.5,
+            value=float(cfg.EMA_ALPHA),
+            step=0.05,
+            help="Lower = smoother but delayed, Higher = more responsive.",
+        )
+        min_movement = st.slider(
+            "Min movement threshold (m)",
+            min_value=0.01,
+            max_value=0.10,
+            value=float(cfg.MIN_MOVEMENT_M),
+            step=0.01,
+            help="Ignore movement below this threshold to prevent jitter accumulation.",
+        )
+        max_human_speed = st.slider(
+            "Max human speed (m/s)",
+            min_value=8.0,
+            max_value=15.0,
+            value=float(cfg.MAX_HUMAN_SPEED_MPS),
+            step=0.5,
+            help="Speeds above this are rejected as detection errors.",
+        )
+        max_gap_frames = st.slider(
+            "Max tracking gap (frames)",
+            min_value=2,
+            max_value=15,
+            value=int(cfg.MAX_SPEED_GAP_FRAMES),
+            step=1,
+            help="Reset tracking if player lost for this many frames.",
+        )
+    
+    # Units Section
+    with st.sidebar.expander("📏 Display Units", expanded=False):
+        use_metric_display = st.radio(
+            "Speed & Distance Units",
+            options=["Metric (m/s, meters)", "Imperial (km/h, km)"],
+            index=0 if cfg.USE_METRIC_DISPLAY else 1,
+            help="Choose how speeds and distances are displayed.",
+        ) == "Metric (m/s, meters)"
 
     return TouchOptions(
         detector_weights=det_weights,
@@ -530,29 +1072,68 @@ def sidebar_options(calibration_default: Optional[str] = None) -> TouchOptions:
         extended_ground_multiplier=extended_ground_multiplier,
         draw_ground_grid=draw_ground_grid,
         ground_grid_spacing_m=ground_grid_spacing,
+        grid_line_subdivisions=grid_subdivisions,
+        show_grid_distance_markers=show_distance_markers,
+        # Accuracy improvements
+        min_movement_m=min_movement,
+        max_speed_gap_frames=max_gap_frames,
+        max_human_speed_mps=max_human_speed,
+        max_ball_speed_mps=cfg.MAX_BALL_SPEED_MPS,
+        use_ema_smoothing=use_ema,
+        ema_alpha=ema_alpha,
+        # Unit system
+        use_metric_display=use_metric_display,
     )
 
 
 def report_options():
-    st.sidebar.header("Report")
-    selections = st.sidebar.multiselect(
-        "Include in report",
-        options=REPORT_SECTIONS,
-        default=REPORT_SECTIONS,
-    )
+    with st.sidebar.expander("📊 Report Options", expanded=False):
+        selections = st.multiselect(
+            "Include in report",
+            options=REPORT_SECTIONS,
+            default=REPORT_SECTIONS,
+        )
     return set(selections)
 
 
 def main():
-    st.title("Soccer Analysis")
+    # Professional Header
+    st.markdown(
+        """
+        <div class="header-container">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h1 class="header-title">⚽ Soccer AI</h1>
+                    <p class="header-subtitle">AI-Powered Performance Analysis & Coaching</p>
+                </div>
+                <span class="version-badge">v1.0</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    uploaded = st.file_uploader("Upload a video", type=["mp4", "mov", "avi", "mkv"])
-    samples = {
-        "Test video (main)": Path("bin/test_video.mp4"),
-        "Test video (alt)": Path("bin/test_vide.mp4"),
-        "None": None,
-    }
-    sample_choice = st.selectbox("Or pick a sample in the repo", options=list(samples.keys()), index=0)
+    # Video Input Section
+    st.markdown(
+        """<div class="section-container">
+            <div class="section-header"><span class="section-icon">📤</span> Video Input</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    col_upload, col_sample = st.columns([2, 1])
+    with col_upload:
+        uploaded = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi", "mkv"], label_visibility="collapsed")
+    with col_sample:
+        samples = {
+            "📹 Test video (main)": Path("bin/test_video.mp4"),
+            "📹 Test video (alt)": Path("bin/test_vide.mp4"),
+            "🚫 None": None,
+        }
+        sample_choice = st.selectbox("Or select a sample", options=list(samples.keys()), index=0, label_visibility="collapsed")
+    
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
     video_path = None
     if uploaded is not None:
@@ -736,35 +1317,62 @@ def main():
 
     options = sidebar_options(st.session_state.get("calibration_path"))
     report_sections = report_options()
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
+    
+    # Processing Options Section
+    st.markdown(
+        """<div class="section-container">
+            <div class="section-header"><span class="section-icon">⚙️</span> Processing Options</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    col_frames, col_viz1, col_viz2 = st.columns([2, 1, 1])
+    with col_frames:
         max_frames = st.number_input(
             "Max frames to process (0 = full video)",
             min_value=0,
             step=50,
             value=0,
         )
-    with col_right:
-        st.markdown("**Visualization**")
+    with col_viz1:
         st.checkbox(
-            "Show preview during processing",
+            "🎬 Show preview",
             value=True,
             key="viz_toggle",
             help="Turn off to speed up processing.",
         )
+    with col_viz2:
         st.checkbox(
-            "Full-screen preview",
+            "🖥️ Fullscreen preview",
             value=False,
             key="fullscreen_toggle",
             help="Show the annotated frame across the full width.",
         )
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Run Button
+    st.markdown("<br>", unsafe_allow_html=True)
+    run_btn = st.button("▶️  Run Detection", use_container_width=True, type="primary")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    run_btn = st.button("Run detection", use_container_width=True)
-
-    col_stats, col_preview = st.columns([2, 1])
-    progress = col_stats.progress(0.0)
-    stats_placeholder = col_stats.empty()
-    frame_placeholder_side = col_preview.empty()
+    # Live Dashboard Section (placeholders)
+    st.markdown(
+        """<div class="section-container">
+            <div class="section-header"><span class="section-icon">📊</span> Live Analysis Dashboard</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    progress = st.progress(0.0)
+    
+    col_metrics, col_preview = st.columns([3, 2])
+    with col_metrics:
+        stats_placeholder = st.empty()
+    with col_preview:
+        frame_placeholder_side = st.empty()
+    
+    st.markdown("</div>", unsafe_allow_html=True)
     frame_placeholder_full = st.empty()
 
     if not run_btn:
@@ -821,12 +1429,8 @@ def main():
                 peak_decel_mps2 = result.peak_decel_mps2
                 processed_frames += 1
 
-                avg_speed_text = (
-                    f"{last_avg_speed:.1f} km/h" if last_avg_speed is not None else "--"
-                )
-                max_speed_text = (
-                    f"{last_max_speed:.1f} km/h" if last_max_speed is not None else "--"
-                )
+                avg_speed_text = _format_speed(last_avg_speed, options.use_metric_display)
+                max_speed_text = _format_speed(last_max_speed, options.use_metric_display)
                 jump_height_text = "--"
                 if highest_jump_m is not None:
                     jump_height_text = f"{highest_jump_m:.2f} m"
@@ -839,91 +1443,93 @@ def main():
                     force_kmh = last_entry.get("force_kmh")
                     force_px_s = last_entry.get("force_px_s")
                     if force_kmh is not None:
-                        last_force_text = f"{last_type} - {force_kmh:.1f} km/h"
+                        last_force_text = f"{last_type} - {_format_speed(force_kmh, options.use_metric_display)}"
                     elif force_px_s is not None:
                         last_force_text = f"{last_type} - {force_px_s:.1f} px/s"
                 time_text = _format_duration(total_time_sec)
-                distance_text = _format_distance(total_distance_m)
+                distance_text = _format_distance(total_distance_m, options.use_metric_display)
                 accel_text = _format_accel(peak_accel_mps2)
                 decel_text = _format_accel(peak_decel_mps2)
                 overlay_lines = []
-                card_blocks = []
+                metric_cards = []
+                
                 if "Touches" in report_sections:
                     overlay_lines.append(f"Touches (L / R): {left} / {right}")
                     overlay_lines.append(f"Total ball touches: {total_touches}")
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;">Touches (L / R)</div>
-                        <div style="font-size:1.8rem;font-weight:700;">{left} / {right}</div>
-                        """
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">👟</div>
+                            <div class="metric-label">Ball Touches</div>
+                            <div class="metric-value metric-value-highlight">{left} / {right}</div>
+                            <div class="metric-subvalue">Left / Right</div>
+                        </div>"""
                     )
+                
                 if "Speed" in report_sections:
-                    overlay_lines.append(
-                        f"Player speed (avg / max): {avg_speed_text} / {max_speed_text}"
+                    overlay_lines.append(f"Player speed (avg / max): {avg_speed_text} / {max_speed_text}")
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">⚡</div>
+                            <div class="metric-label">Player Speed</div>
+                            <div class="metric-value">{avg_speed_text}</div>
+                            <div class="metric-subvalue">Max: {max_speed_text}</div>
+                        </div>"""
                     )
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;margin-top:0.5rem;">Player speed (avg / max)</div>
-                        <div style="font-size:1.2rem;font-weight:600;">{avg_speed_text} / {max_speed_text}</div>
-                        """
-                    )
+                
                 if "Jumps" in report_sections:
-                    overlay_lines.append(
-                        f"Jumps / Highest: {total_jumps} / {jump_height_text}"
+                    overlay_lines.append(f"Jumps / Highest: {total_jumps} / {jump_height_text}")
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">🦘</div>
+                            <div class="metric-label">Jumps</div>
+                            <div class="metric-value">{total_jumps}</div>
+                            <div class="metric-subvalue">Max: {jump_height_text}</div>
+                        </div>"""
                     )
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;margin-top:0.5rem;">Jumps / Highest</div>
-                        <div style="font-size:1.2rem;font-weight:600;">{total_jumps} / {jump_height_text}</div>
-                        """
-                    )
+                
                 if "Shots" in report_sections:
-                    overlay_lines.append(
-                        f"Shots / Last force: {shot_count} / {last_force_text}"
+                    overlay_lines.append(f"Shots / Last force: {shot_count} / {last_force_text}")
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">🎯</div>
+                            <div class="metric-label">Shots</div>
+                            <div class="metric-value">{shot_count}</div>
+                            <div class="metric-subvalue">{last_force_text}</div>
+                        </div>"""
                     )
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;margin-top:0.5rem;">Shots / Last force</div>
-                        <div style="font-size:1.2rem;font-weight:600;">{shot_count} / {last_force_text}</div>
-                        """
-                    )
+                
                 if "Time & Distance" in report_sections:
-                    overlay_lines.append(
-                        f"Time analyzed / Distance: {time_text} / {distance_text}"
+                    overlay_lines.append(f"Time analyzed / Distance: {time_text} / {distance_text}")
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">🏃</div>
+                            <div class="metric-label">Distance</div>
+                            <div class="metric-value">{distance_text}</div>
+                            <div class="metric-subvalue">Time: {time_text}</div>
+                        </div>"""
                     )
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;margin-top:0.5rem;">Time / Distance</div>
-                        <div style="font-size:1.2rem;font-weight:600;">{time_text} / {distance_text}</div>
-                        """
-                    )
+                
                 if "Acceleration" in report_sections:
-                    overlay_lines.append(
-                        f"Accel / Decel (peak): {accel_text} / {decel_text}"
+                    overlay_lines.append(f"Accel / Decel (peak): {accel_text} / {decel_text}")
+                    metric_cards.append(
+                        f"""<div class="metric-card">
+                            <div class="metric-icon">📈</div>
+                            <div class="metric-label">Acceleration</div>
+                            <div class="metric-value">{accel_text}</div>
+                            <div class="metric-subvalue">Decel: {decel_text}</div>
+                        </div>"""
                     )
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.9rem;color:#cbd5e1;margin-top:0.5rem;">Accel / Decel (peak)</div>
-                        <div style="font-size:1.2rem;font-weight:600;">{accel_text} / {decel_text}</div>
-                        """
-                    )
+                
+                # Frame counter badge
                 if "Processing info" in report_sections:
                     overlay_lines.append(f"Frame: {result.frame_idx}")
-                    card_blocks.append(
-                        f"""
-                        <div style="font-size:0.8rem;color:#94a3b8;">Frame {result.frame_idx}</div>
-                        """
-                    )
-                card_html = "\n".join(card_blocks)
-                if card_html:
-                    stats_placeholder.markdown(
-                        f"""
-                        <div class="metric-card">
-                            {card_html}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                
+                # Render metrics grid
+                if metric_cards:
+                    grid_html = '<div class="metrics-grid">' + ''.join(metric_cards) + '</div>'
+                    if "Processing info" in report_sections:
+                        grid_html += f'<div style="text-align:right;margin-top:0.5rem;"><span style="background:rgba(34,211,238,0.1);color:#22d3ee;padding:0.25rem 0.75rem;border-radius:999px;font-size:0.8rem;font-weight:600;">Frame {result.frame_idx}</span></div>'
+                    stats_placeholder.markdown(grid_html, unsafe_allow_html=True)
                 else:
                     stats_placeholder.empty()
                 overlay_frame = result.annotated.copy()
@@ -988,159 +1594,262 @@ def main():
             return
 
     progress.progress(1.0)
-    st.success("Done")
-    completion_display = _format_duration(total_time_sec)
-    distance_display = _format_distance(total_distance_m)
-    accel_display = _format_accel(peak_accel_mps2)
-    decel_display = _format_accel(peak_decel_mps2)
-    if "Processing info" in report_sections:
-        st.write(f"Processed frames: {processed_frames}")
-    if "Touches" in report_sections:
-        st.write(f"Final touches — Left: **{left}**, Right: **{right}**")
-    if "Time & Distance" in report_sections:
-        st.write(f"Total completion time: **{completion_display}**")
-        st.write(f"Total distance covered: **{distance_display}**")
-    if "Acceleration" in report_sections:
-        st.write(
-            f"Peak acceleration / deceleration: **{accel_display} / {decel_display}**"
-        )
-    if annotated_video_path:
-        annotated_file = Path(annotated_video_path)
-        if annotated_file.exists() and annotated_file.stat().st_size > 0:
-            annotated_bytes = annotated_file.read_bytes()
-            annotated_file.unlink(missing_ok=True)
-            st.download_button(
-                "Download annotated video",
-                data=annotated_bytes,
-                file_name="annotated_video.mp4",
-                mime="video/mp4",
-                use_container_width=True,
+    st.success("✅ Analysis Complete!")
+    
+    # Results Section
+    st.markdown(
+        """<div class="section-container">
+            <div class="section-header"><span class="section-icon">📈</span> Analysis Results</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Create tabs for organized results
+    tab_summary, tab_shots, tab_speed, tab_export = st.tabs([
+        "📊 Summary", "🎯 Shot Log", "📈 Speed Chart", "💾 Export"
+    ])
+    
+    # Tab 1: Summary
+    with tab_summary:
+        completion_display = _format_duration(total_time_sec)
+        distance_display = _format_distance(total_distance_m)
+        accel_display = _format_accel(peak_accel_mps2)
+        decel_display = _format_accel(peak_decel_mps2)
+        
+        # Final metrics grid
+        summary_cards = []
+        
+        if "Touches" in report_sections:
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">👟</div>
+                    <div class="metric-label">Final Touches</div>
+                    <div class="metric-value metric-value-highlight">{left} / {right}</div>
+                    <div class="metric-subvalue">Left / Right • Total: {left + right}</div>
+                </div>"""
             )
-    if "Speed" in report_sections and (last_avg_speed is not None or last_max_speed is not None):
-        avg_display = f"{last_avg_speed:.1f} km/h" if last_avg_speed is not None else "--"
-        max_display = f"{last_max_speed:.1f} km/h" if last_max_speed is not None else "--"
-        st.write(f"Average player speed: **{avg_display}**")
-        st.write(f"Maximum player speed: **{max_display}**")
-    jump_display = None
-    if highest_jump_m is not None:
-        jump_display = f"{highest_jump_m:.2f} m"
-    elif highest_jump_px is not None:
-        jump_display = f"{highest_jump_px:.0f} px"
-    if "Jumps" in report_sections:
-        st.write(f"Total jumps: **{total_jumps}**")
-        if jump_display is not None:
-            st.write(f"Highest jump: **{jump_display}**")
-
-    if "Shot log" in report_sections:
-        if shot_log:
-            st.subheader("Shot log")
-            st.write(f"Shots detected: **{shot_count}**")
-            shot_df = pd.DataFrame(shot_log)
-            if "time_sec" in shot_df:
-                shot_df["time"] = shot_df["time_sec"].apply(
-                    lambda t: f"{t:.2f}s" if pd.notna(t) else "--"
+        
+        if "Speed" in report_sections and (last_avg_speed is not None or last_max_speed is not None):
+            speed_unit = "m/s" if options.use_metric_display else "km/h"
+            avg_display = _format_speed(last_avg_speed, options.use_metric_display) if last_avg_speed is not None else "--"
+            max_display = _format_speed(last_max_speed, options.use_metric_display) if last_max_speed is not None else "--"
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">⚡</div>
+                    <div class="metric-label">Speed</div>
+                    <div class="metric-value">{avg_display} <span style="font-size:0.8rem;color:var(--text-secondary);">avg</span></div>
+                    <div class="metric-subvalue">Peak: {max_display}</div>
+                </div>"""
+            )
+        
+        if "Time & Distance" in report_sections:
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">🏃</div>
+                    <div class="metric-label">Distance Covered</div>
+                    <div class="metric-value">{distance_display}</div>
+                    <div class="metric-subvalue">Duration: {completion_display}</div>
+                </div>"""
+            )
+        
+        if "Jumps" in report_sections:
+            jump_display = "--"
+            if highest_jump_m is not None:
+                jump_display = f"{highest_jump_m:.2f} m"
+            elif highest_jump_px is not None:
+                jump_display = f"{highest_jump_px:.0f} px"
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">🦘</div>
+                    <div class="metric-label">Jumps</div>
+                    <div class="metric-value">{total_jumps}</div>
+                    <div class="metric-subvalue">Highest: {jump_display}</div>
+                </div>"""
+            )
+        
+        if "Shots" in report_sections:
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">🎯</div>
+                    <div class="metric-label">Shots Detected</div>
+                    <div class="metric-value metric-value-highlight">{shot_count}</div>
+                    <div class="metric-subvalue">Events in shot log</div>
+                </div>"""
+            )
+        
+        if "Acceleration" in report_sections:
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">📈</div>
+                    <div class="metric-label">Peak Acceleration</div>
+                    <div class="metric-value">{accel_display}</div>
+                    <div class="metric-subvalue">Decel: {decel_display}</div>
+                </div>"""
+            )
+        
+        if "Processing info" in report_sections:
+            summary_cards.append(
+                f"""<div class="metric-card">
+                    <div class="metric-icon">🎬</div>
+                    <div class="metric-label">Frames Processed</div>
+                    <div class="metric-value">{processed_frames}</div>
+                    <div class="metric-subvalue">of {total_frames or 'N/A'} total</div>
+                </div>"""
+            )
+        
+        if summary_cards:
+            st.markdown('<div class="metrics-grid">' + ''.join(summary_cards) + '</div>', unsafe_allow_html=True)
+        
+        # Download annotated video
+        if annotated_video_path:
+            annotated_file = Path(annotated_video_path)
+            if annotated_file.exists() and annotated_file.stat().st_size > 0:
+                st.markdown("<br>", unsafe_allow_html=True)
+                annotated_bytes = annotated_file.read_bytes()
+                annotated_file.unlink(missing_ok=True)
+                st.download_button(
+                    "📥 Download Annotated Video",
+                    data=annotated_bytes,
+                    file_name="annotated_video.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+    
+    # Tab 2: Shot Log
+    with tab_shots:
+        if "Shot log" in report_sections:
+            if shot_log:
+                st.markdown(f"**{shot_count}** shots/passes detected", unsafe_allow_html=True)
+                shot_df = pd.DataFrame(shot_log)
+                if "time_sec" in shot_df:
+                    shot_df["time"] = shot_df["time_sec"].apply(
+                        lambda t: f"{t:.2f}s" if pd.notna(t) else "--"
+                    )
+                else:
+                    shot_df["time"] = "--"
+                if "shot" not in shot_df:
+                    shot_df["shot"] = range(1, len(shot_df) + 1)
+                if "type" not in shot_df:
+                    shot_df["type"] = "pass"
+                def _fmt_force(row):
+                    if pd.notna(row.get("force_kmh")):
+                        return _format_speed(row['force_kmh'], options.use_metric_display)
+                    if pd.notna(row.get("force_px_s")):
+                        return f"{row['force_px_s']:.1f} px/s"
+                    return "--"
+                shot_df["force"] = shot_df.apply(_fmt_force, axis=1)
+                display_cols = {
+                    "shot": "Shot #",
+                    "time": "Time",
+                    "type": "Type",
+                    "foot": "Foot",
+                    "force": "Force",
+                    "frame_idx": "Frame",
+                    "track_id": "Track ID",
+                }
+                st.dataframe(
+                    shot_df[list(display_cols.keys())].rename(columns=display_cols),
+                    hide_index=True,
+                    use_container_width=True,
                 )
             else:
-                shot_df["time"] = "--"
-            if "shot" not in shot_df:
-                shot_df["shot"] = range(1, len(shot_df) + 1)
-            if "type" not in shot_df:
-                shot_df["type"] = "pass"
-            def _fmt_force(row):
-                if pd.notna(row.get("force_kmh")):
-                    return f"{row['force_kmh']:.1f} km/h"
-                if pd.notna(row.get("force_px_s")):
-                    return f"{row['force_px_s']:.1f} px/s"
-                return "--"
-            shot_df["force"] = shot_df.apply(_fmt_force, axis=1)
-            display_cols = {
-                "shot": "Shot #",
-                "time": "Time",
-                "type": "Type",
-                "foot": "Foot",
-                "force": "Force",
-                "frame_idx": "Frame",
-                "track_id": "Track ID",
+                st.info("ℹ️ No shot events detected in this video.")
+        else:
+            st.info("ℹ️ Shot log not included in report options.")
+    
+    # Tab 3: Speed Chart
+    with tab_speed:
+        if "Speed chart" in report_sections:
+            if speed_points:
+                st.markdown("**Player speed over time**")
+                df = pd.DataFrame(speed_points).set_index("frame")
+                st.line_chart(df)
+            else:
+                st.info("ℹ️ No speed measurements available for charting.")
+        else:
+            st.info("ℹ️ Speed chart not included in report options.")
+    
+    # Tab 4: Export
+    with tab_export:
+        st.markdown("**Export Analysis Data**")
+        
+        report_data = {"report_sections": _report_section_list(report_sections)}
+        if "Processing info" in report_sections:
+            report_data["processing"] = {
+                "processed_frames": processed_frames,
+                "total_frames": total_frames or None,
+                "input_fps": input_fps,
+                "display_stride": options.display_stride,
+                "max_frames": None if max_frames <= 0 else int(max_frames),
             }
-            st.dataframe(
-                shot_df[list(display_cols.keys())].rename(columns=display_cols),
-                hide_index=True,
+        if "Touches" in report_sections:
+            report_data["touches"] = {
+                "left": left,
+                "right": right,
+                "total": left + right,
+            }
+        if "Speed" in report_sections:
+            report_data["speed"] = {
+                "avg_kmh": last_avg_speed,
+                "max_kmh": last_max_speed,
+            }
+        if "Jumps" in report_sections:
+            report_data["jumps"] = {
+                "total": total_jumps,
+                "highest_m": highest_jump_m,
+                "highest_px": highest_jump_px,
+            }
+        if "Shots" in report_sections:
+            report_data["shots"] = {
+                "count": shot_count,
+            }
+        if "Time & Distance" in report_sections:
+            report_data["time_distance"] = {
+                "total_time_sec": total_time_sec,
+                "total_distance_m": total_distance_m,
+            }
+        if "Acceleration" in report_sections:
+            report_data["acceleration"] = {
+                "peak_accel_mps2": peak_accel_mps2,
+                "peak_decel_mps2": peak_decel_mps2,
+            }
+        if "Shot log" in report_sections:
+            report_data["shot_log"] = shot_log
+        if "Speed chart" in report_sections:
+            report_data["speed_points"] = speed_points
+        
+        trimmed_report, truncation = _trim_report_for_context(
+            report_data, MAX_REPORT_CHARS
+        )
+        report_json = json.dumps(trimmed_report, indent=2, ensure_ascii=True)
+        
+        if truncation:
+            st.warning("⚠️ Report JSON was trimmed to stay under ~100k tokens.")
+        
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                "📥 Download Report JSON",
+                data=report_json,
+                file_name="soccer_report.json",
+                mime="application/json",
                 use_container_width=True,
             )
-        else:
-            st.info("No shot events detected.")
-
-    if "Speed chart" in report_sections:
-        if speed_points:
-            st.subheader("Speed over time")
-            df = pd.DataFrame(speed_points).set_index("frame")
-            st.line_chart(df)
-        else:
-            st.info("No speed measurements available for charting.")
-
-    report_data = {"report_sections": _report_section_list(report_sections)}
-    if "Processing info" in report_sections:
-        report_data["processing"] = {
-            "processed_frames": processed_frames,
-            "total_frames": total_frames or None,
-            "input_fps": input_fps,
-            "display_stride": options.display_stride,
-            "max_frames": None if max_frames <= 0 else int(max_frames),
-        }
-    if "Touches" in report_sections:
-        report_data["touches"] = {
-            "left": left,
-            "right": right,
-            "total": left + right,
-        }
-    if "Speed" in report_sections:
-        report_data["speed"] = {
-            "avg_kmh": last_avg_speed,
-            "max_kmh": last_max_speed,
-        }
-    if "Jumps" in report_sections:
-        report_data["jumps"] = {
-            "total": total_jumps,
-            "highest_m": highest_jump_m,
-            "highest_px": highest_jump_px,
-        }
-    if "Shots" in report_sections:
-        report_data["shots"] = {
-            "count": shot_count,
-        }
-    if "Time & Distance" in report_sections:
-        report_data["time_distance"] = {
-            "total_time_sec": total_time_sec,
-            "total_distance_m": total_distance_m,
-        }
-    if "Acceleration" in report_sections:
-        report_data["acceleration"] = {
-            "peak_accel_mps2": peak_accel_mps2,
-            "peak_decel_mps2": peak_decel_mps2,
-        }
-    if "Shot log" in report_sections:
-        report_data["shot_log"] = shot_log
-    if "Speed chart" in report_sections:
-        report_data["speed_points"] = speed_points
-
-    trimmed_report, truncation = _trim_report_for_context(
-        report_data, MAX_REPORT_CHARS
-    )
-    report_json = json.dumps(trimmed_report, indent=2, ensure_ascii=True)
-    if truncation:
-        st.warning(
-            "Report JSON was trimmed to stay under ~100k tokens."
-        )
-    st.subheader("Report JSON")
-    st.download_button(
-        "Download report JSON",
-        data=report_json,
-        file_name="soccer_report.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-    with st.expander("Preview JSON"):
-        st.code(report_json, language="json")
+        with col_dl2:
+            if shot_log:
+                shot_csv = pd.DataFrame(shot_log).to_csv(index=False)
+                st.download_button(
+                    "📥 Download Shot Log CSV",
+                    data=shot_csv,
+                    file_name="shot_log.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+        
+        with st.expander("🔍 Preview JSON"):
+            st.code(report_json, language="json")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
