@@ -3,7 +3,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import pandas as pd
@@ -707,6 +707,210 @@ def _draw_stats_overlay(
         cursor_y += base + line_gap
 
 
+def _draw_event_overlay(frame_bgr, event: Optional[Dict[str, Any]]) -> None:
+    if not event:
+        return
+    label = str(event.get("type") or "event").upper()
+    power_val = event.get("power")
+    if power_val is not None:
+        label = f"{label} {power_val:.0f}"
+    pos = event.get("pos")
+    if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+        pos = (40.0, 80.0)
+    x = int(pos[0])
+    y = max(24, int(pos[1]) - 10)
+    color_map = {
+        "SHOT": (0, 0, 255),
+        "PASS": (0, 255, 0),
+        "DRIBBLE": (255, 215, 0),
+    }
+    cv2.putText(
+        frame_bgr,
+        label,
+        (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        color_map.get(label.split()[0], (0, 255, 255)),
+        3,
+        cv2.LINE_AA,
+    )
+
+
+def _draw_player_overlays(
+    frame_bgr,
+    players: List[Dict[str, Any]],
+    show_ids: bool = True,
+    show_feet: bool = True,
+    show_speed: bool = True,
+    use_metric_display: bool = True,
+) -> None:
+    if not players:
+        return
+    h = frame_bgr.shape[0]
+    for player in players:
+        bbox = player.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if show_ids:
+            pid = player.get("id", "?")
+            cv2.putText(
+                frame_bgr,
+                f"ID {pid}",
+                (x1, max(0, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+        if show_feet:
+            left = player.get("left")
+            right = player.get("right")
+            if left is not None:
+                cv2.circle(
+                    frame_bgr,
+                    (int(left[0]), int(left[1])),
+                    5,
+                    (255, 0, 0),
+                    -1,
+                )
+            if right is not None:
+                cv2.circle(
+                    frame_bgr,
+                    (int(right[0]), int(right[1])),
+                    5,
+                    (0, 0, 255),
+                    -1,
+                )
+        if show_speed:
+            speed_kmh = player.get("speed_kmh")
+            if speed_kmh is not None:
+                speed_text = _format_speed(speed_kmh, use_metric_display)
+                speed_y = min(h - 8, y2 + 24)
+                cv2.putText(
+                    frame_bgr,
+                    speed_text,
+                    (x1, speed_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+
+def _draw_ball_overlay(
+    frame_bgr,
+    ball: Optional[Dict[str, Any]],
+    show_vector: bool,
+    show_speed: bool,
+    use_homography: bool,
+    vector_scale: float,
+) -> None:
+    if not ball:
+        return
+    center = ball.get("center")
+    radius = ball.get("radius")
+    if center is None or radius is None:
+        return
+    start_pt = (int(center[0]), int(center[1]))
+    cv2.circle(
+        frame_bgr,
+        start_pt,
+        int(radius),
+        (0, 165, 255),
+        2,
+    )
+    vel_draw = ball.get("vel_draw")
+    if show_vector and vel_draw is not None:
+        end_pt = (
+            int(center[0] + vel_draw[0] * vector_scale),
+            int(center[1] + vel_draw[1] * vector_scale),
+        )
+        cv2.arrowedLine(
+            frame_bgr,
+            start_pt,
+            end_pt,
+            (0, 255, 255),
+            2,
+            tipLength=0.3,
+        )
+        if show_speed:
+            display_speed = ball.get("speed_mps") if use_homography else ball.get("speed_draw")
+            speed_unit = "m/s" if use_homography else "px/s"
+            if display_speed is not None:
+                cv2.putText(
+                    frame_bgr,
+                    f"{display_speed:.1f}{speed_unit}",
+                    (start_pt[0] + 6, start_pt[1] - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+
+def _draw_ball_trail_overlay(
+    frame_bgr,
+    trail_points: List[Tuple[float, float]],
+    color: Tuple[int, int, int] = (0, 165, 255),
+    max_thickness: int = 6,
+) -> None:
+    if len(trail_points) < 2:
+        return
+    max_thickness = max(1, int(max_thickness))
+    denom = max(1, len(trail_points) - 1)
+    for idx in range(1, len(trail_points)):
+        pt1 = trail_points[idx - 1]
+        pt2 = trail_points[idx]
+        t = idx / denom
+        intensity = 0.2 + 0.8 * t
+        thickness = max(1, int(round(1 + (max_thickness - 1) * t)))
+        color_scaled = (
+            int(color[0] * intensity),
+            int(color[1] * intensity),
+            int(color[2] * intensity),
+        )
+        cv2.line(
+            frame_bgr,
+            (int(pt1[0]), int(pt1[1])),
+            (int(pt2[0]), int(pt2[1])),
+            color_scaled,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+
+def _collect_ball_trail(
+    frame_lookup: Dict[int, Dict[str, Any]],
+    frame_idx: int,
+    max_len: int,
+    max_gap_frames: int,
+) -> List[Tuple[float, float]]:
+    if max_len <= 1:
+        return []
+    keys = [k for k in frame_lookup.keys() if k <= frame_idx]
+    keys.sort(reverse=True)
+    points = []
+    last_frame = None
+    for k in keys:
+        meta = frame_lookup[k].get("meta") if frame_lookup.get(k) else None
+        ball = meta.get("ball") if meta else None
+        center = ball.get("center") if ball else None
+        if center is None:
+            continue
+        if last_frame is not None and last_frame - k > max_gap_frames:
+            break
+        points.append((float(center[0]), float(center[1])))
+        last_frame = k
+        if len(points) >= max_len:
+            break
+    return list(reversed(points))
+
+
 def _init_video_writer(path: str, frame_bgr, fps: float) -> Optional[cv2.VideoWriter]:
     height, width = frame_bgr.shape[:2]
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -758,6 +962,7 @@ REPORT_SECTIONS = [
     "Acceleration",
     "Shot log",
     "Speed chart",
+    "Snapshots",
 ]
 MAX_REPORT_TOKENS = 100000
 TOKEN_CHAR_RATIO = 4
@@ -766,6 +971,9 @@ CHAT_HISTORY_LIMIT = 8
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_TEMPERATURE = 0.2
 DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 1024
+SNAPSHOT_MAX = 8
+SNAPSHOT_WIDTH = 640
+SNAPSHOT_JPEG_QUALITY = 90
 COACH_SYSTEM_PROMPT = (
     "You are a soccer performance analyst and coach. "
     "Use only the provided report JSON to answer. "
@@ -855,6 +1063,7 @@ def _trim_report_for_context(report_data: dict, max_chars: int) -> tuple[dict, O
         dropped = []
         for key in (
             "speed_points",
+            "snapshots",
             "shot_log",
             "processing",
             "speed",
@@ -887,6 +1096,23 @@ def _trim_report_for_context(report_data: dict, max_chars: int) -> tuple[dict, O
             }
 
     return data, truncation or None
+
+
+def _save_snapshot(image_bgr, path: Path) -> tuple[int, int]:
+    if image_bgr is None:
+        return 0, 0
+    image_to_save = image_bgr
+    if SNAPSHOT_WIDTH and image_bgr.shape[1] > SNAPSHOT_WIDTH:
+        scale = SNAPSHOT_WIDTH / image_bgr.shape[1]
+        new_w = SNAPSHOT_WIDTH
+        new_h = max(1, int(image_bgr.shape[0] * scale))
+        image_to_save = cv2.resize(image_bgr, (new_w, new_h))
+    cv2.imwrite(
+        str(path),
+        image_to_save,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(SNAPSHOT_JPEG_QUALITY)],
+    )
+    return image_to_save.shape[1], image_to_save.shape[0]
 
 
 def _get_gemini_api_key() -> Optional[str]:
@@ -1026,6 +1252,7 @@ def sidebar_options(calibration_default: Optional[str] = None) -> TouchOptions:
             value=float(cfg.BALL_VECTOR_SCALE),
             step=1.0,
         )
+        draw_trail = st.checkbox("Show ball trail", value=cfg.DRAW_BALL_TRAIL)
         show_speed = st.checkbox("Show ball speed", value=cfg.SHOW_BALL_SPEED)
         show_player_speed = st.checkbox("Show player speed", value=cfg.SHOW_PLAYER_SPEED)
         show_components = st.checkbox("Show velocity components", value=cfg.SHOW_BALL_COMPONENTS)
@@ -1173,6 +1400,7 @@ def sidebar_options(calibration_default: Optional[str] = None) -> TouchOptions:
         show_ball_speed=show_speed,
         show_player_speed=show_player_speed,
         show_ball_components=show_components,
+        draw_ball_trail=draw_trail,
         event_touch_enabled=event_touch_enabled,
         event_touch_dist_ratio=event_touch_dist_ratio,
         display_stride=display_stride,
@@ -1516,11 +1744,16 @@ def main():
         highest_jump_px = cached.get("highest_jump_px")
         shot_log = cached.get("shot_log", [])
         shot_count = cached.get("shot_count", len(shot_log))
+        snapshots = cached.get("snapshots", [])
         total_time_sec = cached.get("total_time_sec")
         total_distance_m = cached.get("total_distance_m")
         peak_accel_mps2 = cached.get("peak_accel_mps2")
         peak_decel_mps2 = cached.get("peak_decel_mps2")
         annotated_video_path = cached.get("annotated_video_path")
+        frame_records = cached.get("frame_records", [])
+        ground_overlay = cached.get("ground_overlay")
+        options_snapshot = cached.get("options_snapshot", {})
+        analysis_use_homography = cached.get("use_homography", options.use_homography)
         if input_fps is None and video_path:
             input_fps = _video_fps(video_path)
     else:
@@ -1541,12 +1774,27 @@ def main():
         highest_jump_px = None
         shot_log = []
         shot_count = 0
+        snapshots = []
         total_time_sec = None
         total_distance_m = None
         peak_accel_mps2 = None
         peak_decel_mps2 = None
         annotated_video_path = None
+        frame_records = []
+        ground_overlay = None
+        options_snapshot = {
+            "draw_ball_vector": options.draw_ball_vector,
+            "ball_vector_scale": options.ball_vector_scale,
+            "show_ball_speed": options.show_ball_speed,
+            "draw_ball_trail": options.draw_ball_trail,
+            "ball_trail_length": options.ball_trail_length,
+            "ball_trail_max_gap_frames": options.ball_trail_max_gap_frames,
+            "show_player_speed": options.show_player_speed,
+        }
+        analysis_use_homography = options.use_homography
         video_writer = None
+        snapshot_dir = None
+        last_shot_log_len = 0
 
         gen = run_touch_detection(
             video_path,
@@ -1681,6 +1929,63 @@ def main():
                     overlay_frame = result.annotated.copy()
                     if overlay_lines:
                         _draw_stats_overlay(overlay_frame, overlay_lines)
+                    if result.frame_meta is not None:
+                        if ground_overlay is None and "ground_overlay" in result.frame_meta:
+                            ground_overlay = result.frame_meta.get("ground_overlay")
+                        analysis_use_homography = result.frame_meta.get(
+                            "use_homography", analysis_use_homography
+                        )
+                        frame_records.append(
+                            {
+                                "frame_idx": result.frame_idx,
+                                "meta": result.frame_meta,
+                                "stats": {
+                                    "left": left,
+                                    "right": right,
+                                    "avg_speed_kmh": result.avg_speed_kmh,
+                                    "max_speed_kmh": result.max_speed_kmh,
+                                    "total_jumps": result.total_jumps,
+                                    "highest_jump_m": result.highest_jump_m,
+                                    "highest_jump_px": result.highest_jump_px,
+                                    "shot_count": result.shot_count,
+                                    "pass_count": result.pass_count,
+                                    "total_time_sec": result.total_time_sec,
+                                    "total_distance_m": result.total_distance_m,
+                                    "peak_accel_mps2": result.peak_accel_mps2,
+                                    "peak_decel_mps2": result.peak_decel_mps2,
+                                },
+                            }
+                        )
+                    if "Snapshots" in report_sections and len(snapshots) < SNAPSHOT_MAX:
+                        if len(shot_log) > last_shot_log_len:
+                            if snapshot_dir is None:
+                                snapshot_dir = Path(
+                                    tempfile.mkdtemp(prefix="soccer_snapshots_")
+                                )
+                            new_events = shot_log[last_shot_log_len:]
+                            for event in new_events:
+                                if len(snapshots) >= SNAPSHOT_MAX:
+                                    break
+                                event_type = event.get("type", "event")
+                                event_no = event.get("shot", len(snapshots) + 1)
+                                event_frame = event.get("frame_idx")
+                                filename = f"{event_type}_{event_no}_frame_{event_frame or result.frame_idx}.jpg"
+                                snapshot_path = snapshot_dir / filename
+                                width, height = _save_snapshot(overlay_frame, snapshot_path)
+                                snapshots.append(
+                                    {
+                                        "id": len(snapshots) + 1,
+                                        "type": event_type,
+                                        "shot": event_no,
+                                        "frame_idx": event_frame,
+                                        "time_sec": event.get("time_sec"),
+                                        "kick_frame": event.get("kick_frame"),
+                                        "image_path": str(snapshot_path),
+                                        "width": width,
+                                        "height": height,
+                                    }
+                                )
+                            last_shot_log_len = len(shot_log)
                     if video_writer is None:
                         tmp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                         annotated_video_path = tmp_video.name
@@ -1743,6 +2048,10 @@ def main():
         previous_path = None
         if isinstance(previous_cache, dict):
             previous_path = previous_cache.get("annotated_video_path")
+            for snap in previous_cache.get("snapshots", []):
+                snap_path = snap.get("image_path")
+                if snap_path:
+                    Path(snap_path).unlink(missing_ok=True)
         if previous_path and previous_path != annotated_video_path:
             Path(previous_path).unlink(missing_ok=True)
         st.session_state["analysis_cache"] = {
@@ -1766,7 +2075,12 @@ def main():
             "peak_accel_mps2": peak_accel_mps2,
             "peak_decel_mps2": peak_decel_mps2,
             "speed_points": speed_points,
+            "snapshots": snapshots,
             "annotated_video_path": annotated_video_path,
+            "frame_records": frame_records,
+            "ground_overlay": ground_overlay,
+            "options_snapshot": options_snapshot,
+            "use_homography": analysis_use_homography,
         }
 
     progress.progress(1.0)
@@ -1816,12 +2130,23 @@ def main():
         report_data["shot_log"] = shot_log
     if "Speed chart" in report_sections:
         report_data["speed_points"] = speed_points
+    if "Snapshots" in report_sections:
+        report_data["snapshots"] = snapshots
 
     trimmed_report, truncation = _trim_report_for_context(
         report_data, MAX_REPORT_CHARS
     )
     report_json = json.dumps(trimmed_report, indent=2, ensure_ascii=True)
+    llm_report_data = dict(report_data)
+    llm_report_data.pop("speed_points", None)
+    llm_report_data.pop("snapshots", None)
+    llm_trimmed_report, llm_truncation = _trim_report_for_context(
+        llm_report_data, MAX_REPORT_CHARS
+    )
+    llm_report_json = json.dumps(llm_trimmed_report, indent=2, ensure_ascii=True)
     st.session_state["report_json"] = report_json
+    st.session_state["llm_report_json"] = llm_report_json
+    st.session_state["llm_truncation"] = llm_truncation
     if st.session_state.get("chat_video_path") != video_path:
         st.session_state["chat_video_path"] = video_path
         st.session_state["chat_messages"] = []
@@ -1837,8 +2162,10 @@ def main():
     # Create a tab-like selector (persists across reruns)
     tab_labels = [
         "📊 Summary",
+        "🎬 Player",
         "🎯 Shot Log",
         "📈 Speed Chart",
+        "📸 Snapshots",
         "💬 Coach Chat",
         "💾 Export",
     ]
@@ -1940,7 +2267,198 @@ def main():
         
         if summary_cards:
             st.markdown('<div class="metrics-grid">' + ''.join(summary_cards) + '</div>', unsafe_allow_html=True)
-    
+    # Tab 2: Player
+    elif active_tab == "🎬 Player":
+        if not video_path:
+            st.info("ℹ️ Upload a video or select a sample to use the player.")
+        elif not frame_records:
+            st.info("ℹ️ Run detection to generate frame data for the player.")
+        else:
+            frame_lookup = {
+                rec.get("frame_idx"): rec
+                for rec in frame_records
+                if rec.get("frame_idx") is not None
+            }
+            available_frames = sorted(frame_lookup.keys())
+            if not available_frames:
+                st.info("ℹ️ Frame metadata is empty. Re-run detection.")
+            else:
+                if display_stride_used > 1:
+                    st.caption(
+                        "Note: overlay data is recorded every "
+                        f"{display_stride_used} frames. For full coverage, set Display stride to 1 and re-run."
+                    )
+
+                defaults = options_snapshot or {}
+                default_vector_scale = float(
+                    defaults.get("ball_vector_scale", cfg.BALL_VECTOR_SCALE)
+                )
+                default_trail_len = int(
+                    defaults.get("ball_trail_length", cfg.BALL_TRAIL_LENGTH)
+                )
+                default_trail_gap = int(
+                    defaults.get("ball_trail_max_gap_frames", cfg.BALL_TRAIL_MAX_GAP_FRAMES)
+                )
+
+                with st.expander("Overlay controls", expanded=True):
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        show_players = st.checkbox("Player boxes", value=True, key="player_show_players")
+                        show_ids = st.checkbox("Player IDs", value=True, key="player_show_ids")
+                        show_feet = st.checkbox("Feet markers", value=True, key="player_show_feet")
+                    with col_b:
+                        show_ball = st.checkbox("Ball marker", value=True, key="player_show_ball")
+                        show_ball_vector = st.checkbox(
+                            "Ball vector",
+                            value=bool(defaults.get("draw_ball_vector", cfg.DRAW_BALL_VECTOR)),
+                            key="player_show_ball_vector",
+                        )
+                        show_ball_speed = st.checkbox(
+                            "Ball speed",
+                            value=bool(defaults.get("show_ball_speed", cfg.SHOW_BALL_SPEED)),
+                            key="player_show_ball_speed",
+                        )
+                    with col_c:
+                        show_ball_trail = st.checkbox(
+                            "Ball trail",
+                            value=bool(defaults.get("draw_ball_trail", cfg.DRAW_BALL_TRAIL)),
+                            key="player_show_ball_trail",
+                        )
+                        show_player_speed = st.checkbox(
+                            "Player speed",
+                            value=bool(defaults.get("show_player_speed", cfg.SHOW_PLAYER_SPEED)),
+                            key="player_show_player_speed",
+                        )
+                        show_annotations = st.checkbox(
+                            "Annotations",
+                            value=True,
+                            key="player_show_annotations",
+                        )
+                    if show_ball_trail:
+                        trail_len = st.slider(
+                            "Trail length (frames)",
+                            min_value=2,
+                            max_value=60,
+                            value=max(2, default_trail_len),
+                            step=1,
+                            key="player_trail_len",
+                        )
+                    else:
+                        trail_len = default_trail_len
+                    vector_scale = st.slider(
+                        "Vector scale",
+                        min_value=4.0,
+                        max_value=24.0,
+                        value=default_vector_scale,
+                        step=1.0,
+                        key="player_vector_scale",
+                    )
+
+                max_frame = total_frames or available_frames[-1]
+                default_frame = available_frames[-1]
+                frame_idx = st.slider(
+                    "Frame",
+                    min_value=1,
+                    max_value=max_frame,
+                    value=default_frame,
+                    step=1,
+                    key="player_frame_idx",
+                )
+
+                frame_bgr = _read_video_frame(video_path, max(0, frame_idx - 1))
+                if frame_bgr is None:
+                    st.error("Unable to read the selected frame.")
+                else:
+                    overlay_rec = frame_lookup.get(frame_idx)
+                    frame_render = frame_bgr.copy()
+                    if overlay_rec is None:
+                        st.info(
+                            "Overlay data not available for this frame. Re-run with Display stride = 1 for full coverage."
+                        )
+                    else:
+                        meta = overlay_rec.get("meta", {})
+                        stats = overlay_rec.get("stats", {})
+                        use_homography = bool(
+                            meta.get("use_homography", analysis_use_homography)
+                        )
+                        if show_ball and show_ball_trail:
+                            trail_points = _collect_ball_trail(
+                                frame_lookup,
+                                frame_idx,
+                                max_len=max(2, trail_len),
+                                max_gap_frames=max(1, default_trail_gap),
+                            )
+                            _draw_ball_trail_overlay(frame_render, trail_points)
+                        if show_players:
+                            _draw_player_overlays(
+                                frame_render,
+                                meta.get("players", []),
+                                show_ids=show_ids,
+                                show_feet=show_feet,
+                                show_speed=show_player_speed,
+                                use_metric_display=options.use_metric_display,
+                            )
+                        if show_ball:
+                            _draw_ball_overlay(
+                                frame_render,
+                                meta.get("ball"),
+                                show_vector=show_ball_vector,
+                                show_speed=show_ball_speed,
+                                use_homography=use_homography,
+                                vector_scale=vector_scale,
+                            )
+                        if show_annotations:
+                            event_overlay = meta.get("event_overlay")
+                            if event_overlay:
+                                _draw_event_overlay(frame_render, event_overlay)
+                            overlay_lines = []
+                            if "Touches" in report_sections:
+                                overlay_lines.append(
+                                    f"Touches (L / R): {stats.get('left', 0)} / {stats.get('right', 0)}"
+                                )
+                            if "Speed" in report_sections:
+                                avg_speed_text = _format_speed(
+                                    stats.get("avg_speed_kmh"),
+                                    options.use_metric_display,
+                                )
+                                max_speed_text = _format_speed(
+                                    stats.get("max_speed_kmh"),
+                                    options.use_metric_display,
+                                )
+                                overlay_lines.append(
+                                    f"Player speed (avg / max): {avg_speed_text} / {max_speed_text}"
+                                )
+                            if "Jumps" in report_sections:
+                                jump_height_text = "--"
+                                if stats.get("highest_jump_m") is not None:
+                                    jump_height_text = f"{stats['highest_jump_m']:.2f} m"
+                                elif stats.get("highest_jump_px") is not None:
+                                    jump_height_text = f"{stats['highest_jump_px']:.0f} px"
+                                overlay_lines.append(
+                                    f"Jumps / Highest: {stats.get('total_jumps', 0)} / {jump_height_text}"
+                                )
+                            if "Shots" in report_sections:
+                                overlay_lines.append(
+                                    f"Shots / Passes: {stats.get('shot_count', 0)} / {stats.get('pass_count', 0)}"
+                                )
+                            if "Time & Distance" in report_sections:
+                                overlay_lines.append(
+                                    f"Time analyzed / Distance: {_format_duration(stats.get('total_time_sec'))} / "
+                                    f"{_format_distance(stats.get('total_distance_m'), options.use_metric_display)}"
+                                )
+                            if "Acceleration" in report_sections:
+                                overlay_lines.append(
+                                    f"Accel / Decel (peak): {_format_accel(stats.get('peak_accel_mps2'))} / "
+                                    f"{_format_accel(stats.get('peak_decel_mps2'))}"
+                                )
+                            if "Processing info" in report_sections:
+                                overlay_lines.append(f"Frame: {frame_idx}")
+                            if overlay_lines:
+                                _draw_stats_overlay(frame_render, overlay_lines)
+
+                    frame_rgb = cv2.cvtColor(frame_render, cv2.COLOR_BGR2RGB)
+                    st.image(frame_rgb, caption=f"Frame {frame_idx}", use_container_width=True)
+
     # Tab 2: Shot Log
     elif active_tab == "🎯 Shot Log":
         if "Shot log" in report_sections:
@@ -1995,11 +2513,39 @@ def main():
         else:
             st.info("ℹ️ Speed chart not included in report options.")
     
-    # Tab 4: Coach Chat
+    # Tab 4: Snapshots
+    elif active_tab == "📸 Snapshots":
+        if "Snapshots" in report_sections:
+            if snapshots:
+                st.markdown(f"**Captured snapshots (max {SNAPSHOT_MAX})**")
+                cols = st.columns(3)
+                for idx, snap in enumerate(snapshots):
+                    caption_parts = []
+                    if snap.get("type"):
+                        caption_parts.append(str(snap.get("type")).capitalize())
+                    if snap.get("shot"):
+                        caption_parts.append(f"#{snap.get('shot')}")
+                    if snap.get("time_sec") is not None:
+                        caption_parts.append(f"{snap.get('time_sec'):.2f}s")
+                    caption = " ".join(caption_parts) if caption_parts else "Snapshot"
+                    with cols[idx % 3]:
+                        st.image(
+                            snap.get("image_path", ""),
+                            caption=caption,
+                            use_container_width=True,
+                        )
+            else:
+                st.info("ℹ️ No snapshots captured yet.")
+        else:
+            st.info("ℹ️ Snapshots not included in report options.")
+
+    # Tab 5: Coach Chat
     elif active_tab == "💬 Coach Chat":
         st.markdown("**Chat with your report**")
-        st.caption(f"Report context size: ~{_estimate_tokens(report_json)} tokens.")
-        if truncation:
+        llm_report_json = st.session_state.get("llm_report_json", report_json)
+        llm_truncation = st.session_state.get("llm_truncation")
+        st.caption(f"Report context size: ~{_estimate_tokens(llm_report_json)} tokens.")
+        if llm_truncation:
             st.warning("⚠️ Report JSON was trimmed to stay under ~100k tokens.")
 
         prereq_error = _gemini_prereq_error()
@@ -2047,7 +2593,7 @@ def main():
                 with st.chat_message("assistant"):
                     with st.spinner("Analyzing report..."):
                         response_text, error = _generate_gemini_response(
-                            report_json=report_json,
+                            report_json=llm_report_json,
                             user_message=prompt,
                             history=messages,
                             model=model.strip(),
@@ -2062,7 +2608,7 @@ def main():
                         messages.append({"role": "assistant", "content": response_text})
                         st.session_state["chat_messages"] = messages
 
-    # Tab 5: Export
+    # Tab 6: Export
     elif active_tab == "💾 Export":
         st.markdown("**Export Analysis Data**")
         

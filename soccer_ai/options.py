@@ -16,6 +16,9 @@ class TouchOptions:
     ball_vector_scale: float = cfg.BALL_VECTOR_SCALE
     show_ball_speed: bool = cfg.SHOW_BALL_SPEED
     show_ball_components: bool = cfg.SHOW_BALL_COMPONENTS
+    draw_ball_trail: bool = cfg.DRAW_BALL_TRAIL
+    ball_trail_length: int = cfg.BALL_TRAIL_LENGTH
+    ball_trail_max_gap_frames: int = cfg.BALL_TRAIL_MAX_GAP_FRAMES
     show_player_speed: bool = cfg.SHOW_PLAYER_SPEED
     event_touch_enabled: bool = cfg.EVENT_TOUCH_ENABLED
     event_touch_dist_ratio: float = cfg.EVENT_TOUCH_DIST_RATIO

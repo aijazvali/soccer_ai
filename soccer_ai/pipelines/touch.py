@@ -8,7 +8,7 @@ consume annotated frames and running stats while sharing the same core logic.
 from collections import deque
 from dataclasses import dataclass, field
 import math
-from typing import Generator, Optional, List, Dict, Tuple
+from typing import Generator, Optional, List, Dict, Tuple, Any
 
 import cv2
 import numpy as np
@@ -48,6 +48,7 @@ class FrameResult:
     pass_count: int = 0
     avg_shot_power: Optional[float] = None
     player_stats: Optional[Dict[str, Dict]] = None
+    frame_meta: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -203,6 +204,45 @@ def _normalize_shot_power(
     span = max(accel_max - accel_min, 1e-3)
     score = (peak_accel - accel_min) / span
     return max(0.0, min(1.0, score)) * 100.0
+
+
+def _draw_ball_trail(
+    frame: np.ndarray,
+    trail: deque,
+    color: Tuple[int, int, int] = (0, 165, 255),
+    max_thickness: int = 6,
+) -> None:
+    if len(trail) < 2:
+        return
+    max_thickness = max(1, int(max_thickness))
+    denom = max(1, len(trail) - 1)
+    for idx in range(1, len(trail)):
+        pt1 = trail[idx - 1]
+        pt2 = trail[idx]
+        if pt1 is None or pt2 is None:
+            continue
+        t = idx / denom
+        intensity = 0.2 + 0.8 * t
+        thickness = max(1, int(round(1 + (max_thickness - 1) * t)))
+        color_scaled = (
+            int(color[0] * intensity),
+            int(color[1] * intensity),
+            int(color[2] * intensity),
+        )
+        cv2.line(
+            frame,
+            (int(pt1[0]), int(pt1[1])),
+            (int(pt2[0]), int(pt2[1])),
+            color_scaled,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+
+def _to_point(pt: Optional[Tuple[float, float]]) -> Optional[Tuple[float, float]]:
+    if pt is None:
+        return None
+    return (float(pt[0]), float(pt[1]))
 
 
 class KickAnalyzer:
@@ -604,11 +644,37 @@ def run_touch_detection(
                 line_img = cv2.perspectiveTransform(line_field_pts, h_inv).reshape(-1, 2)
                 ground_grid_lines.append(line_img)
 
+    ground_overlay_data = None
+    if (
+        ground_poly is not None
+        or extended_ground_poly is not None
+        or ground_grid_lines
+        or grid_intersection_points
+    ):
+        ground_overlay_data = {
+            "ground_poly": ground_poly.tolist() if ground_poly is not None else None,
+            "extended_ground_poly": (
+                extended_ground_poly.tolist() if extended_ground_poly is not None else None
+            ),
+            "ground_grid_lines": (
+                [line.tolist() for line in ground_grid_lines] if ground_grid_lines else []
+            ),
+            "grid_intersection_points": [
+                {
+                    "pos": (float(pt[0]), float(pt[1])),
+                    "x": float(x_field),
+                    "y": float(y_field),
+                }
+                for pt, x_field, y_field in grid_intersection_points
+            ],
+        }
+
     frames_required = max(1, int(round(cfg.CONTACT_SEC * fps)))
     cooldown_frames = max(1, int(round(cfg.COOLDOWN_SEC * fps)))
     soft_frames_required = max(1, int(round(cfg.SOFT_TOUCH_SEC * fps)))
 
     frame_idx = 0
+    ground_overlay_sent = False
 
     left_touches = 0
     right_touches = 0
@@ -631,6 +697,11 @@ def run_touch_detection(
 
     ball_history = deque(maxlen=cfg.BALL_SMOOTHING)
     last_ball_frame = -1000
+    ball_trail_len = int(opts.ball_trail_length) if opts.ball_trail_length is not None else 0
+    if ball_trail_len < 2:
+        ball_trail_len = 0
+    ball_trail = deque(maxlen=ball_trail_len) if ball_trail_len else deque()
+    last_trail_frame = -1000
 
     ball_motion = deque(maxlen=cfg.BALL_VEL_SMOOTHING)
     ball_event_history = deque(maxlen=cfg.BALL_EVENT_WINDOW)
@@ -846,6 +917,13 @@ def run_touch_detection(
                 ball_center, ball_radius = smooth_ball(ball_history)
             else:
                 ball_history.clear()
+
+            if ball_trail_len:
+                if ball_center is not None:
+                    ball_trail.append((ball_center[0], ball_center[1]))
+                    last_trail_frame = frame_idx
+                elif frame_idx - last_trail_frame > opts.ball_trail_max_gap_frames:
+                    ball_trail.clear()
 
             if use_homography and ball_center is not None:
                 ball_center_field = project_if_ready(ball_center)
@@ -1652,6 +1730,14 @@ def run_touch_detection(
                 state_for_event = resolve_state_for(analysis_result.kicker_id)
                 log_event(analysis_result, state_for_event)
 
+            if (
+                opts.draw_ball_trail
+                and ball_trail_len
+                and len(ball_trail) > 1
+                and frame_idx - last_trail_frame <= opts.ball_trail_max_gap_frames
+            ):
+                _draw_ball_trail(annotated, ball_trail)
+
             if ball_center and ball_radius:
                 cv2.circle(
                     annotated,
@@ -1855,6 +1941,54 @@ def run_touch_detection(
                         "shots": stats["shots"],
                         "avg_shot_power": avg_power,
                     }
+                player_meta = []
+                for person in people:
+                    bbox = person.get("bbox")
+                    if bbox is None or len(bbox) != 4:
+                        continue
+                    x1, y1, x2, y2 = bbox
+                    player_meta.append(
+                        {
+                            "id": str(person.get("id")),
+                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                            "left": _to_point(person.get("left")),
+                            "right": _to_point(person.get("right")),
+                            "speed_kmh": person.get("speed_kmh"),
+                        }
+                    )
+                ball_meta = None
+                if ball_center is not None and ball_radius is not None:
+                    ball_meta = {
+                        "center": _to_point(ball_center),
+                        "radius": float(ball_radius),
+                        "vel_draw": _to_point(ball_vel_draw),
+                        "speed_draw": float(ball_speed_draw)
+                        if ball_speed_draw is not None
+                        else None,
+                        "speed_mps": float(ball_speed) if ball_speed is not None else None,
+                    }
+                event_overlay = None
+                if last_overlay and frame_idx <= overlay_expires:
+                    overlay_pos = last_overlay.get("pos")
+                    if isinstance(overlay_pos, (list, tuple)) and len(overlay_pos) >= 2:
+                        overlay_pos = (float(overlay_pos[0]), float(overlay_pos[1]))
+                    else:
+                        overlay_pos = None
+                    event_overlay = {
+                        "type": last_overlay.get("type"),
+                        "power": last_overlay.get("power"),
+                        "pos": overlay_pos,
+                        "frame": last_overlay.get("frame"),
+                    }
+                frame_meta: Dict[str, Any] = {
+                    "players": player_meta,
+                    "ball": ball_meta,
+                    "event_overlay": event_overlay,
+                    "use_homography": use_homography,
+                }
+                if not ground_overlay_sent and ground_overlay_data is not None:
+                    frame_meta["ground_overlay"] = ground_overlay_data
+                    ground_overlay_sent = True
                 yield FrameResult(
                     frame_idx=frame_idx,
                     annotated=annotated,
@@ -1880,6 +2014,7 @@ def run_touch_detection(
                     avg_shot_power=avg_power_display,
                     shot_events=shot_events.copy(),
                     player_stats=player_view,
+                    frame_meta=frame_meta,
                 )
     finally:
         cap.release()
