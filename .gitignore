@@ -100,3 +100,4 @@ annotated_*.mp4
 
 # Gemini/AI assistant
 .gemini/
+.cache/

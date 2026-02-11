@@ -25,6 +25,12 @@ class TouchOptions:
     display_stride: int = 1
     calibration_path: Optional[str] = None
     use_homography: bool = cfg.USE_HOMOGRAPHY
+    # Detection thresholds (allow ball-specific tuning)
+    ball_conf: float = cfg.DET_CONF
+    person_conf: float = cfg.DET_CONF
+    det_imgsz: Optional[int] = None
+    ball_hold_frames: Optional[int] = None
+    ball_smoothing: Optional[int] = None
     # Extended ground plane visualization
     draw_extended_ground: bool = cfg.DRAW_EXTENDED_GROUND
     extended_ground_multiplier: float = cfg.EXTENDED_GROUND_MULTIPLIER

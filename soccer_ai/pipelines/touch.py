@@ -477,6 +477,36 @@ def run_touch_detection(
         opts.detector_weights, opts.pose_weights
     )
 
+    names = getattr(det_model, "names", None)
+    if names is None and hasattr(det_model, "model"):
+        names = getattr(det_model.model, "names", None)
+    name_map: Dict[int, str] = {}
+    if isinstance(names, dict):
+        name_map = {int(k): str(v) for k, v in names.items()}
+    elif isinstance(names, (list, tuple)):
+        name_map = {i: str(v) for i, v in enumerate(names)}
+
+    def _pick_class_id(labels: List[str], default: int) -> int:
+        if not name_map:
+            return default
+        lowered = {idx: name.lower() for idx, name in name_map.items()}
+        for label in labels:
+            for idx, name in lowered.items():
+                if name == label:
+                    return idx
+        for label in labels:
+            for idx, name in lowered.items():
+                if label in name:
+                    return idx
+        return default
+
+    ball_class_id = _pick_class_id(
+        ["sports ball", "soccer ball", "ball", "football"],
+        cfg.BALL_CLASS_ID,
+    )
+    person_class_id = _pick_class_id(["person"], cfg.PERSON_CLASS_ID)
+    ball_class_name = name_map.get(ball_class_id) if name_map else None
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Unable to open video: {video_path}")
@@ -695,7 +725,17 @@ def run_touch_detection(
     highest_jump_m = 0.0
     highest_jump_px = 0.0
 
-    ball_history = deque(maxlen=cfg.BALL_SMOOTHING)
+    ball_conf = getattr(opts, "ball_conf", cfg.DET_CONF)
+    person_conf = getattr(opts, "person_conf", cfg.DET_CONF)
+    det_imgsz = getattr(opts, "det_imgsz", None)
+    ball_hold_frames = getattr(opts, "ball_hold_frames", None)
+    ball_smoothing = getattr(opts, "ball_smoothing", None)
+    if ball_hold_frames is None:
+        ball_hold_frames = cfg.BALL_HOLD_FRAMES
+    if ball_smoothing is None:
+        ball_smoothing = cfg.BALL_SMOOTHING
+
+    ball_history = deque(maxlen=max(1, int(ball_smoothing)))
     last_ball_frame = -1000
     ball_trail_len = int(opts.ball_trail_length) if opts.ball_trail_length is not None else 0
     if ball_trail_len < 2:
@@ -861,13 +901,19 @@ def run_touch_detection(
             annotated = frame.copy()
             h, w = frame.shape[:2]
 
-            results = det_model.track(
-                frame,
-                persist=True,
-                conf=cfg.DET_CONF,
-                tracker="bytetrack.yaml",
-                verbose=False,
-            )
+            det_conf = min(float(ball_conf), float(person_conf))
+            track_kwargs = {
+                "persist": True,
+                "conf": det_conf,
+                "tracker": "bytetrack.yaml",
+                "verbose": False,
+            }
+            if det_imgsz:
+                try:
+                    track_kwargs["imgsz"] = int(det_imgsz)
+                except (TypeError, ValueError):
+                    pass
+            results = det_model.track(frame, **track_kwargs)
 
             ball_candidates = []
             people_dets = []
@@ -878,11 +924,11 @@ def run_touch_detection(
                     conf = float(box.conf[0]) if box.conf is not None else 0.0
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-                    if cls == cfg.BALL_CLASS_ID and conf >= cfg.DET_CONF:
+                    if cls == ball_class_id and conf >= ball_conf:
                         center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
                         radius = 0.5 * max(cfg.BALL_RADIUS_MIN_PX, min(x2 - x1, y2 - y1))
                         ball_candidates.append((center, radius, conf))
-                    elif cls == cfg.PERSON_CLASS_ID and conf >= cfg.DET_CONF:
+                    elif cls == person_class_id and conf >= person_conf:
                         track_id = None
                         if hasattr(box, "id") and box.id is not None:
                             track_id = int(box.id[0])
@@ -913,7 +959,7 @@ def run_touch_detection(
                 last_ball_frame = frame_idx
                 ball_detected = True
 
-            if ball_history and frame_idx - last_ball_frame <= cfg.BALL_HOLD_FRAMES:
+            if ball_history and frame_idx - last_ball_frame <= int(ball_hold_frames):
                 ball_center, ball_radius = smooth_ball(ball_history)
             else:
                 ball_history.clear()
@@ -1065,12 +1111,22 @@ def run_touch_detection(
                 p_conf = confs[idx] if confs is not None else None
                 kpts_abs = p + np.array([x1, y1])
 
+                def _kp(idx: int) -> Optional[Tuple[float, float]]:
+                    if p_conf is None or p_conf[idx] >= cfg.KPT_CONF:
+                        return (kpts_abs[idx][0], kpts_abs[idx][1])
+                    return None
+
                 left_foot = None
                 right_foot = None
-                if p_conf is None or p_conf[15] >= cfg.KPT_CONF:
-                    left_foot = (kpts_abs[15][0], kpts_abs[15][1])
-                if p_conf is None or p_conf[16] >= cfg.KPT_CONF:
-                    right_foot = (kpts_abs[16][0], kpts_abs[16][1])
+                left_foot = _kp(15)
+                right_foot = _kp(16)
+
+                left_shoulder = _kp(5)
+                right_shoulder = _kp(6)
+                left_elbow = _kp(7)
+                right_elbow = _kp(8)
+                left_wrist = _kp(9)
+                right_wrist = _kp(10)
 
                 foot_min_y = y1 + (y2 - y1) * cfg.FOOT_Y_MIN_RATIO
                 if left_foot is not None:
@@ -1947,15 +2003,21 @@ def run_touch_detection(
                     if bbox is None or len(bbox) != 4:
                         continue
                     x1, y1, x2, y2 = bbox
-                    player_meta.append(
-                        {
-                            "id": str(person.get("id")),
-                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                            "left": _to_point(person.get("left")),
-                            "right": _to_point(person.get("right")),
-                            "speed_kmh": person.get("speed_kmh"),
-                        }
-                    )
+                player_meta.append(
+                    {
+                        "id": str(person.get("id")),
+                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                        "left": _to_point(person.get("left")),
+                        "right": _to_point(person.get("right")),
+                        "speed_kmh": person.get("speed_kmh"),
+                        "left_shoulder": _to_point(left_shoulder),
+                        "right_shoulder": _to_point(right_shoulder),
+                        "left_elbow": _to_point(left_elbow),
+                        "right_elbow": _to_point(right_elbow),
+                        "left_wrist": _to_point(left_wrist),
+                        "right_wrist": _to_point(right_wrist),
+                    }
+                )
                 ball_meta = None
                 if ball_center is not None and ball_radius is not None:
                     ball_meta = {
@@ -1985,6 +2047,8 @@ def run_touch_detection(
                     "ball": ball_meta,
                     "event_overlay": event_overlay,
                     "use_homography": use_homography,
+                    "ball_class_id": ball_class_id,
+                    "ball_class_name": ball_class_name,
                 }
                 if not ground_overlay_sent and ground_overlay_data is not None:
                     frame_meta["ground_overlay"] = ground_overlay_data
