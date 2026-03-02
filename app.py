@@ -66,6 +66,7 @@ def _init_state(default_test: str, default_model: str, default_pose_model: str) 
         "calibration_video": None,
         "calibration_auto_path": None,
         "agility_use_homography": cfg.USE_HOMOGRAPHY,
+        "primary_player_lock": False,
         "agility_display_stride": 1,
         "agility_max_frames": 0,
         "agility_live_preview": True,
@@ -393,6 +394,11 @@ if st.session_state.selected_test in (
             st.session_state.agility_live_preview = st.checkbox(
                 "Show live preview",
                 value=st.session_state.agility_live_preview,
+            )
+            st.session_state.primary_player_lock = st.checkbox(
+                "Primary player lock",
+                value=st.session_state.primary_player_lock,
+                help="Track one primary player and compute metrics only for that player.",
             )
         st.session_state.agility_preview_width = st.slider(
             "Preview width (px)",
@@ -867,6 +873,10 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
     if analyze_clicked:
         with st.spinner("Analyzing video..."):
             try:
+                if live_placeholders:
+                    live_placeholders["status"].caption(
+                        "Initializing models and video pipeline. On CPU this can take 30-180s."
+                    )
                 runtime_store = {
                     "frame_records": [],
                     "snapshots": [],
@@ -1479,6 +1489,7 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                     "pose_weights": st.session_state.selected_pose_model,
                     "calibration_path": st.session_state.get("calibration_path"),
                     "use_homography": st.session_state.get("agility_use_homography"),
+                    "primary_player_lock": st.session_state.get("primary_player_lock", False),
                     "display_stride": st.session_state.get("agility_display_stride"),
                     "max_frames": st.session_state.get("agility_max_frames"),
                     "runtime_store": runtime_store,
@@ -1569,6 +1580,15 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                     video_path,
                     analysis_settings,
                 )
+                if live_placeholders:
+                    live_placeholders["progress"].progress(1.0)
+                    status_value = getattr(st.session_state.analysis_result, "status", "ok")
+                    if status_value == "ok":
+                        live_placeholders["status"].caption("Analysis complete.")
+                    else:
+                        live_placeholders["status"].caption(
+                            f"Analysis finished in '{status_value}' mode."
+                        )
                 st.session_state.analysis_error = None
             except Exception as exc:  # pragma: no cover - UI path
                 st.session_state.analysis_result = None
@@ -1628,6 +1648,24 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
 
         with tabs[0]:
             st.markdown(f"**Status:** {result.status}")
+            if result.status != "ok":
+                reason = None
+                for entry in (result.logs or []):
+                    if isinstance(entry, str) and (
+                        "failed" in entry.lower()
+                        or "no frames processed" in entry.lower()
+                        or "not available" in entry.lower()
+                    ):
+                        reason = entry
+                        break
+                if reason:
+                    st.warning(f"Fallback reason: {reason}")
+                else:
+                    st.warning("Analysis entered fallback mode. Check model files and logs below.")
+                if result.logs:
+                    with st.expander("Analyzer logs", expanded=False):
+                        for line in result.logs[:20]:
+                            st.text(line)
             use_metric_display = st.session_state.get("use_metric_display", True)
             if definition.name == "Agility":
                 metrics_data = result.metrics or {}
@@ -2090,6 +2128,11 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                                 show_players = st.checkbox("Player boxes", value=True, key="player_show_players")
                                 show_ids = st.checkbox("Player IDs", value=True, key="player_show_ids")
                                 show_feet = st.checkbox("Feet markers", value=True, key="player_show_feet")
+                                show_full_annotation = st.checkbox(
+                                    "Full player annotation",
+                                    value=False,
+                                    key="player_show_full_annotation",
+                                )
                             with col_b:
                                 show_ball = st.checkbox("Ball marker", value=True, key="player_show_ball")
                                 show_ball_vector = st.checkbox(
@@ -2107,6 +2150,9 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                                 )
                                 show_annotations = st.checkbox(
                                     "Annotations", value=True, key="player_show_annotations"
+                                )
+                                show_tooltip = st.checkbox(
+                                    "Stats tooltip", value=True, key="player_show_tooltip"
                                 )
                             if show_ball_trail:
                                 trail_len = st.slider(
@@ -2180,6 +2226,8 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                                         show_feet=show_feet,
                                         show_speed=show_player_speed,
                                         use_metric_display=st.session_state.get("use_metric_display", True),
+                                        only_primary=bool(meta.get("primary_player_lock", False)),
+                                        show_full_annotation=show_full_annotation,
                                     )
                                 if show_ball:
                                     draw_ball_overlay(
@@ -2256,7 +2304,8 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                                         f"Drop Jumps: {total_jumps}  Contact: {contact_text}  RSI: {rsi_text}"
                                     )
                                     overlay_lines.append(f"Last Jump: {last_height_text}")
-                                draw_stats_overlay(frame_render, overlay_lines)
+                                if show_tooltip:
+                                    draw_stats_overlay(frame_render, overlay_lines)
 
                             try:
                                 import cv2  # type: ignore
@@ -2383,21 +2432,27 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                         st.caption("Turn rate and cumulative turns over time.")
             elif speed_profile is not None and not speed_profile.empty:
                 if definition.name == "Dribbling":
-                    chart_df = speed_profile.set_index("time_s")[
-                        ["touch_rate", "distance_m"]
-                    ].copy()
-                    if not st.session_state.get("use_metric_display", True):
-                        chart_df["distance_km"] = chart_df.pop("distance_m") / 1000.0
-                    st.line_chart(chart_df)
-                    st.caption("Touch rate and distance over time.")
+                    chart_cols = [
+                        col for col in ["touch_rate", "distance_m"] if col in speed_profile.columns
+                    ]
+                    caption = "Touch rate and distance over time."
                 else:
-                    chart_df = speed_profile.set_index("time_s")[
-                        ["accel_mps2", "distance_m"]
-                    ].copy()
-                    if not st.session_state.get("use_metric_display", True):
+                    chart_cols = [
+                        col for col in ["accel_mps2", "distance_m"] if col in speed_profile.columns
+                    ]
+                    caption = "Acceleration and distance over time."
+
+                if chart_cols:
+                    chart_df = speed_profile.set_index("time_s")[chart_cols].copy()
+                    if (
+                        not st.session_state.get("use_metric_display", True)
+                        and "distance_m" in chart_df.columns
+                    ):
                         chart_df["distance_km"] = chart_df.pop("distance_m") / 1000.0
                     st.line_chart(chart_df)
-                    st.caption("Acceleration and distance over time.")
+                    st.caption(caption)
+                else:
+                    st.info("Speed profile data will appear after analysis.")
             else:
                 st.info("Graph will appear after analysis.")
 
@@ -2526,24 +2581,23 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                     else:
                         st.info("Pace data will appear after analysis.")
             elif speed_profile is not None and not speed_profile.empty:
-                if definition.name == "Dribbling":
-                    chart_df = speed_profile.set_index("time_s")[
-                        ["avg_speed_mps", "max_speed_mps"]
-                    ].copy()
+                chart_cols = [
+                    col for col in ["avg_speed_mps", "max_speed_mps"] if col in speed_profile.columns
+                ]
+                if chart_cols:
+                    chart_df = speed_profile.set_index("time_s")[chart_cols].copy()
                     if not st.session_state.get("use_metric_display", True):
-                        chart_df["avg_speed_kmh"] = chart_df.pop("avg_speed_mps") * 3.6
-                        chart_df["max_speed_kmh"] = chart_df.pop("max_speed_mps") * 3.6
+                        if "avg_speed_mps" in chart_df.columns:
+                            chart_df["avg_speed_kmh"] = chart_df.pop("avg_speed_mps") * 3.6
+                        if "max_speed_mps" in chart_df.columns:
+                            chart_df["max_speed_kmh"] = chart_df.pop("max_speed_mps") * 3.6
                     st.line_chart(chart_df)
-                    st.caption("Dribbling speed over time.")
+                    if definition.name == "Dribbling":
+                        st.caption("Dribbling speed over time.")
+                    else:
+                        st.caption("Average and max speed over time.")
                 else:
-                    chart_df = speed_profile.set_index("time_s")[
-                        ["avg_speed_mps", "max_speed_mps"]
-                    ].copy()
-                    if not st.session_state.get("use_metric_display", True):
-                        chart_df["avg_speed_kmh"] = chart_df.pop("avg_speed_mps") * 3.6
-                        chart_df["max_speed_kmh"] = chart_df.pop("max_speed_mps") * 3.6
-                    st.line_chart(chart_df)
-                    st.caption("Average and max speed over time.")
+                    st.info("Speed profile data will appear after analysis.")
             else:
                 st.info("Chart will appear after analysis.")
 
@@ -2594,12 +2648,17 @@ with card("Analysis", "Run the placeholder pipeline and inspect outputs."):
                                 "show_ball_speed": st.session_state.get("player_show_ball_speed", True),
                                 "show_ball_trail": st.session_state.get("player_show_ball_trail", True),
                                 "show_player_speed": st.session_state.get("player_show_player_speed", True),
+                                "show_full_annotation": st.session_state.get(
+                                    "player_show_full_annotation", False
+                                ),
                                 "show_annotations": st.session_state.get("player_show_annotations", True),
+                                "show_tooltip": st.session_state.get("player_show_tooltip", True),
                                 "trail_len": st.session_state.get("player_trail_len", 12),
                                 "trail_max_gap": cfg.BALL_TRAIL_MAX_GAP_FRAMES,
                                 "vector_scale": st.session_state.get("player_vector_scale", 10.0),
                                 "use_metric_display": st.session_state.get("use_metric_display", True),
                                 "use_homography": st.session_state.get("agility_use_homography"),
+                                "primary_player_lock": st.session_state.get("primary_player_lock", False),
                                 "display_stride": runtime_store.get("display_stride", 1),
                             }
                             def _progress_cb(value: float) -> None:

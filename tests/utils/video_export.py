@@ -48,6 +48,9 @@ def _overlay_frame(
         draw_ball_trail_overlay(frame_bgr, trail_points)
 
     if settings.get("show_players"):
+        primary_lock = bool(
+            meta.get("primary_player_lock", settings.get("primary_player_lock", False))
+        )
         draw_player_overlays(
             frame_bgr,
             meta.get("players", []),
@@ -55,6 +58,8 @@ def _overlay_frame(
             show_feet=settings.get("show_feet", True),
             show_speed=settings.get("show_player_speed", True),
             use_metric_display=use_metric_display,
+            only_primary=primary_lock,
+            show_full_annotation=settings.get("show_full_annotation", False),
         )
 
     if settings.get("show_ball"):
@@ -94,7 +99,8 @@ def _overlay_frame(
     max_streak = stats.get("max_consecutive_touches")
     if max_streak is not None:
         overlay_lines.append(f"Max Streak: {max_streak}")
-    draw_stats_overlay(frame_bgr, overlay_lines)
+    if settings.get("show_tooltip", True):
+        draw_stats_overlay(frame_bgr, overlay_lines)
 
 
 def export_annotated_video(

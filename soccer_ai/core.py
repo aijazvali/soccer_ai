@@ -45,7 +45,13 @@ class TrackState:
     speed_history: deque = field(
         default_factory=lambda: deque(maxlen=cfg.PLAYER_SPEED_SMOOTHING)
     )
+    accel_history: deque = field(
+        default_factory=lambda: deque(maxlen=cfg.ACCEL_SMOOTHING)
+    )
     speed_kmh: Optional[float] = None
+    speed_sum_kmh: float = 0.0
+    speed_sample_count: int = 0
+    max_speed_kmh: float = 0.0
     total_distance_m: float = 0.0
     last_speed_mps: Optional[float] = None
     peak_accel_mps2: float = 0.0

@@ -112,6 +112,7 @@ def analyze(video_path: str, settings: dict) -> AnalysisResult:
         pose_weights=pose_weights,
         display_stride=int(settings.get("display_stride", 1)),
         use_homography=bool(settings.get("use_homography", cfg.USE_HOMOGRAPHY)),
+        primary_player_lock=bool(settings.get("primary_player_lock", False)),
         ball_conf=float(settings.get("ball_conf", cfg.DET_CONF)),
         person_conf=float(settings.get("person_conf", cfg.DET_CONF)),
         det_imgsz=settings.get("det_imgsz"),

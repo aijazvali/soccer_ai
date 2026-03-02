@@ -87,9 +87,11 @@ PLAYER_SPEED_SMOOTHING = 7  # Increased from 5 for better stability
 MIN_MOVEMENT_M = 0.03  # Minimum movement to count as distance (prevents jitter accumulation)
 MAX_SPEED_GAP_FRAMES = 5  # Reset speed tracking if player lost for this many frames
 MAX_HUMAN_SPEED_MPS = 12.0  # Maximum realistic human sprint speed (~43 km/h, Usain Bolt peak)
+MAX_HUMAN_ACCEL_MPS2 = 18.0  # Reject implausible acceleration spikes from keypoint jitter
 MAX_BALL_SPEED_MPS = 50.0  # Maximum realistic ball speed (~180 km/h for hard shots)
 USE_EMA_SMOOTHING = True  # Use Exponential Moving Average instead of median
 EMA_ALPHA = 0.3  # EMA smoothing factor (0.1=very smooth, 0.5=more responsive)
+ACCEL_SMOOTHING = 5  # Median window for acceleration smoothing
 
 # Unit system toggle
 USE_METRIC_DISPLAY = True  # True = m/s and meters, False = km/h and km

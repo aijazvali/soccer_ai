@@ -883,8 +883,57 @@ def run_touch_detection(
                 state = None
         return state
 
+    def update_smoothed_speed_and_accel(
+        state: TrackState, raw_speed_mps: float, dt_seconds: float
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Convert raw speed to a robust smoothed speed/acceleration estimate."""
+        if dt_seconds <= 0:
+            return None, None
+
+        if opts.use_ema_smoothing:
+            prev_kmh = state.speed_kmh
+            raw_kmh = raw_speed_mps * 3.6
+            if prev_kmh is None:
+                speed_kmh = raw_kmh
+            else:
+                speed_kmh = opts.ema_alpha * raw_kmh + (1.0 - opts.ema_alpha) * prev_kmh
+        else:
+            state.speed_history.append(raw_speed_mps * 3.6)
+            if not state.speed_history:
+                return None, None
+            speed_kmh = float(np.median(state.speed_history))
+
+        speed_mps = speed_kmh / 3.6
+        accel_mps2 = None
+        if state.last_speed_mps is not None:
+            accel_raw = (speed_mps - state.last_speed_mps) / dt_seconds
+            if abs(accel_raw) <= cfg.MAX_HUMAN_ACCEL_MPS2:
+                state.accel_history.append(accel_raw)
+                if state.accel_history:
+                    accel_mps2 = float(np.median(state.accel_history))
+            # Ignore implausible acceleration spikes from keypoint jitter.
+
+        state.last_speed_mps = speed_mps
+        state.speed_kmh = speed_kmh
+        return speed_kmh, accel_mps2
+
+    def pick_primary_track_id(candidates: List[Dict]) -> Optional[Any]:
+        best_id = None
+        best_area = None
+        for person in candidates:
+            bbox = person.get("bbox")
+            if bbox is None or len(bbox) != 4:
+                continue
+            x1, y1, x2, y2 = bbox
+            area = max(1, (x2 - x1) * (y2 - y1))
+            if best_area is None or area > best_area:
+                best_area = area
+                best_id = person.get("id")
+        return best_id
+
     track_states = {}
     track_last_seen = {}
+    primary_track_id = None
 
     try:
         while True:
@@ -1079,8 +1128,25 @@ def run_touch_detection(
                     prev_ball_center_calc = vel_center_calc
                     prev_ball_frame = frame_idx
 
+            primary_detection_idx = None
+            if opts.primary_player_lock and people_dets:
+                primary_detection_idx = max(
+                    range(len(people_dets)),
+                    key=lambda idx: max(
+                        1,
+                        (people_dets[idx][3] - people_dets[idx][1])
+                        * (people_dets[idx][4] - people_dets[idx][2]),
+                    ),
+                )
+
             people = []
             for i, (track_id, x1, y1, x2, y2) in enumerate(people_dets):
+                if (
+                    opts.primary_player_lock
+                    and primary_detection_idx is not None
+                    and i != primary_detection_idx
+                ):
+                    continue
                 box = clamp_box(x1, y1, x2, y2, w, h)
                 if box is None:
                     continue
@@ -1140,7 +1206,10 @@ def run_touch_detection(
                     elif right_foot[1] < foot_min_y:
                         right_foot = None
 
-                if track_id is None:
+                if opts.primary_player_lock:
+                    track_id = "primary_locked"
+                    primary_track_id = track_id
+                elif track_id is None:
                     track_id = f"tmp_{frame_idx}_{i}"
 
                 state = track_states.setdefault(track_id, TrackState())
@@ -1195,70 +1264,31 @@ def run_touch_detection(
                             state.last_m_per_px = float(np.median(state.meters_per_px_history))
 
                 speed_kmh = None
-                speed_mps_display = None
+                speed_measurement_valid = False
                 if speed_anchor is not None:
-                    speed_mps = None
                     speed_anchor_field = None
+                    raw_speed_mps = None
+                    dt_seconds = None
+                    distance_delta_m = None
                     if use_homography and fps > 0:
                         speed_anchor_field = project_if_ready(speed_anchor)
 
-                    # Gap detection: reset tracking if player lost for too long
+                    # Gap detection: reset tracking if player lost for too long.
                     gap_frames = frame_idx - state.last_speed_frame if state.last_speed_frame > 0 else 0
                     if gap_frames > opts.max_speed_gap_frames:
                         state.prev_speed_field = None
                         state.prev_speed_point = None
                         state.last_speed_mps = None
                         state.speed_history.clear()
+                        state.accel_history.clear()
 
                     if speed_anchor_field is not None and fps > 0:
                         if state.prev_speed_field is not None and state.last_speed_frame > 0:
                             dt_frames = frame_idx - state.last_speed_frame
                             if dt_frames > 0:
-                                dist_m = dist(speed_anchor_field, state.prev_speed_field)
                                 dt_seconds = dt_frames / fps
-                                speed_mps = dist_m / dt_seconds
-                                
-                                # Outlier rejection: skip if speed is impossibly high
-                                if speed_mps > opts.max_human_speed_mps:
-                                    speed_mps = None
-                                elif dist_m >= opts.min_movement_m:
-                                    # Only count distance if above threshold (prevents jitter)
-                                    total_distance_m += dist_m
-                                    state.total_distance_m += dist_m
-                                    distance_samples += 1
-                                
-                                if speed_mps is not None:
-                                    if state.last_speed_mps is not None:
-                                        accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
-                                        if accel_mps2 >= 0:
-                                            state.peak_accel_mps2 = max(
-                                                state.peak_accel_mps2, accel_mps2
-                                            )
-                                            peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
-                                            accel_samples += 1
-                                        else:
-                                            decel_mps2 = -accel_mps2
-                                            state.peak_decel_mps2 = max(
-                                                state.peak_decel_mps2, decel_mps2
-                                            )
-                                            peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
-                                            decel_samples += 1
-                                    state.last_speed_mps = speed_mps
-                                    
-                                    # Smoothing: EMA or median
-                                    if opts.use_ema_smoothing:
-                                        if state.speed_kmh is not None:
-                                            speed_kmh = opts.ema_alpha * (speed_mps * 3.6) + (1 - opts.ema_alpha) * state.speed_kmh
-                                        else:
-                                            speed_kmh = speed_mps * 3.6
-                                    else:
-                                        state.speed_history.append(speed_mps * 3.6)
-                                        if state.speed_history:
-                                            speed_kmh = float(np.median(state.speed_history))
-                                    state.speed_kmh = speed_kmh
-                                    speed_mps_display = speed_mps
-                        if speed_mps is None:
-                            state.last_speed_mps = None
+                                distance_delta_m = dist(speed_anchor_field, state.prev_speed_field)
+                                raw_speed_mps = distance_delta_m / dt_seconds
                         state.prev_speed_field = speed_anchor_field
                         state.prev_speed_point = speed_anchor
                         state.last_speed_frame = frame_idx
@@ -1266,51 +1296,10 @@ def run_touch_detection(
                         if state.prev_speed_point is not None and state.last_speed_frame > 0:
                             dt_frames = frame_idx - state.last_speed_frame
                             if dt_frames > 0:
-                                dist_px = dist(speed_anchor, state.prev_speed_point)
-                                dist_m = dist_px * meters_per_pixel
                                 dt_seconds = dt_frames / fps
-                                speed_mps = dist_m / dt_seconds
-                                
-                                # Outlier rejection
-                                if speed_mps > opts.max_human_speed_mps:
-                                    speed_mps = None
-                                elif dist_m >= opts.min_movement_m:
-                                    total_distance_m += dist_m
-                                    state.total_distance_m += dist_m
-                                    distance_samples += 1
-                                
-                                if speed_mps is not None:
-                                    if state.last_speed_mps is not None:
-                                        accel_mps2 = (speed_mps - state.last_speed_mps) / dt_seconds
-                                        if accel_mps2 >= 0:
-                                            state.peak_accel_mps2 = max(
-                                                state.peak_accel_mps2, accel_mps2
-                                            )
-                                            peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
-                                            accel_samples += 1
-                                        else:
-                                            decel_mps2 = -accel_mps2
-                                            state.peak_decel_mps2 = max(
-                                                state.peak_decel_mps2, decel_mps2
-                                            )
-                                            peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
-                                            decel_samples += 1
-                                    state.last_speed_mps = speed_mps
-                                    
-                                    # Smoothing: EMA or median
-                                    if opts.use_ema_smoothing:
-                                        if state.speed_kmh is not None:
-                                            speed_kmh = opts.ema_alpha * (speed_mps * 3.6) + (1 - opts.ema_alpha) * state.speed_kmh
-                                        else:
-                                            speed_kmh = speed_mps * 3.6
-                                    else:
-                                        state.speed_history.append(speed_mps * 3.6)
-                                        if state.speed_history:
-                                            speed_kmh = float(np.median(state.speed_history))
-                                    state.speed_kmh = speed_kmh
-                                    speed_mps_display = speed_mps
-                        if speed_mps is None:
-                            state.last_speed_mps = None
+                                dist_px = dist(speed_anchor, state.prev_speed_point)
+                                distance_delta_m = dist_px * meters_per_pixel
+                                raw_speed_mps = distance_delta_m / dt_seconds
                         state.prev_speed_point = speed_anchor
                         state.prev_speed_field = None
                         state.last_speed_frame = frame_idx
@@ -1319,19 +1308,53 @@ def run_touch_detection(
                         state.prev_speed_field = None
                         state.last_speed_frame = frame_idx
                         state.last_speed_mps = None
+                        state.accel_history.clear()
+
+                    if raw_speed_mps is not None and distance_delta_m is not None:
+                        # Reject implausible top-speed outliers before smoothing.
+                        if raw_speed_mps > opts.max_human_speed_mps:
+                            raw_speed_mps = None
+                        elif distance_delta_m >= opts.min_movement_m:
+                            total_distance_m += distance_delta_m
+                            state.total_distance_m += distance_delta_m
+                            distance_samples += 1
+
+                    if raw_speed_mps is not None and dt_seconds is not None:
+                        speed_kmh, accel_mps2 = update_smoothed_speed_and_accel(
+                            state, raw_speed_mps, dt_seconds
+                        )
+                        if speed_kmh is not None:
+                            speed_measurement_valid = True
+                        if accel_mps2 is not None:
+                            if accel_mps2 >= 0:
+                                state.peak_accel_mps2 = max(state.peak_accel_mps2, accel_mps2)
+                                peak_accel_mps2 = max(peak_accel_mps2, accel_mps2)
+                                accel_samples += 1
+                            else:
+                                decel_mps2 = -accel_mps2
+                                state.peak_decel_mps2 = max(state.peak_decel_mps2, decel_mps2)
+                                peak_decel_mps2 = max(peak_decel_mps2, decel_mps2)
+                                decel_samples += 1
+                    elif speed_anchor_field is not None or meters_per_pixel is not None:
+                        state.last_speed_mps = None
+                        state.accel_history.clear()
                 else:
                     state.prev_speed_point = None
                     state.prev_speed_field = None
                     state.speed_history.clear()
+                    state.accel_history.clear()
                     state.speed_kmh = None
                     state.last_speed_mps = None
 
                 if speed_kmh is None:
                     speed_kmh = state.speed_kmh
-                if speed_kmh is not None:
+                if speed_measurement_valid and speed_kmh is not None:
                     speed_sum += speed_kmh
                     speed_count += 1
                     speed_max = max(speed_max, speed_kmh)
+                    state.speed_sum_kmh += speed_kmh
+                    state.speed_sample_count += 1
+                    state.max_speed_kmh = max(state.max_speed_kmh, speed_kmh)
 
                 ankle_y = None
                 if left_foot is not None and right_foot is not None:
@@ -1485,6 +1508,12 @@ def run_touch_detection(
                         "right": right_foot,
                         "left_field": left_field,
                         "right_field": right_field,
+                        "left_shoulder": left_shoulder,
+                        "right_shoulder": right_shoulder,
+                        "left_elbow": left_elbow,
+                        "right_elbow": right_elbow,
+                        "left_wrist": left_wrist,
+                        "right_wrist": right_wrist,
                         "foot_radius": foot_radius,
                         "foot_radius_m": foot_radius_m,
                         "speed_kmh": speed_kmh,
@@ -1773,6 +1802,44 @@ def run_touch_detection(
                     track_last_seen.pop(track_id, None)
                     track_states.pop(track_id, None)
 
+            if opts.primary_player_lock:
+                current_ids = {person.get("id") for person in people}
+                if primary_track_id is not None and primary_track_id not in current_ids:
+                    primary_track_id = None
+                if primary_track_id is not None:
+                    last_seen = track_last_seen.get(primary_track_id)
+                    if last_seen is None or frame_idx - last_seen > cfg.TRACK_TTL:
+                        primary_track_id = None
+                if primary_track_id is None:
+                    primary_track_id = pick_primary_track_id(people)
+
+            if opts.primary_player_lock and primary_track_id is not None:
+                for person in people:
+                    if person.get("id") != primary_track_id:
+                        continue
+                    bbox = person.get("bbox")
+                    if bbox is None or len(bbox) != 4:
+                        break
+                    x1, y1, x2, y2 = [int(v) for v in bbox]
+                    primary_color = (0, 215, 255)
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), primary_color, 3)
+                    cv2.putText(
+                        annotated,
+                        f"ID {primary_track_id} *",
+                        (x1, max(0, y1 - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        primary_color,
+                        2,
+                    )
+                    break
+
+            primary_state = (
+                resolve_state_for(primary_track_id)
+                if opts.primary_player_lock and primary_track_id is not None
+                else None
+            )
+
             analysis_result = None
             if motion_sample is not None:
                 analysis_result = kick_analyzer.process_sample(
@@ -1929,6 +1996,21 @@ def run_touch_detection(
                         1,
                     )
             avg_power_display = shot_power_sum / shot_power_samples if shot_power_samples else None
+            left_display = left_touches
+            right_display = right_touches
+            pass_display = pass_count
+            shot_display = shot_count_total
+            if opts.primary_player_lock and primary_state is not None:
+                left_display = primary_state.left_touches
+                right_display = primary_state.right_touches
+                pass_display = primary_state.passes
+                shot_display = primary_state.shots
+                if primary_state.shot_power_count > 0:
+                    avg_power_display = (
+                        primary_state.shot_power_total / primary_state.shot_power_count
+                    )
+                else:
+                    avg_power_display = None
 
             if last_overlay and frame_idx <= overlay_expires:
                 label = last_overlay.get("type", "event")
@@ -1964,14 +2046,14 @@ def run_touch_detection(
 
             cv2.putText(
                 annotated,
-                f"L: {left_touches}   R: {right_touches}",
+                f"L: {left_display}   R: {right_display}",
                 (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
                 (0, 0, 255),
                 3,
             )
-            stats_text = f"Passes: {pass_count}   Shots: {shot_count_total}"
+            stats_text = f"Passes: {pass_display}   Shots: {shot_display}"
             if avg_power_display is not None:
                 stats_text += f"   Power: {avg_power_display:.0f}"
             cv2.putText(
@@ -1987,6 +2069,36 @@ def run_touch_detection(
             if opts.display_stride > 0 and frame_idx % opts.display_stride == 0:
                 avg_speed = speed_sum / speed_count if speed_count else None
                 max_speed = speed_max if speed_count else None
+                total_distance_display = total_distance_m if distance_samples > 0 else None
+                peak_accel_display = peak_accel_mps2 if accel_samples > 0 else None
+                peak_decel_display = peak_decel_mps2 if decel_samples > 0 else None
+                if opts.primary_player_lock and primary_state is not None:
+                    if primary_state.speed_sample_count > 0:
+                        avg_speed = primary_state.speed_sum_kmh / primary_state.speed_sample_count
+                    else:
+                        total_time = frame_idx / fps if fps > 0 else None
+                        if total_time and total_time > 0 and primary_state.total_distance_m > 0:
+                            avg_speed = (primary_state.total_distance_m / total_time) * 3.6
+                        else:
+                            avg_speed = None
+                    max_speed = (
+                        primary_state.max_speed_kmh if primary_state.max_speed_kmh > 0 else None
+                    )
+                    total_distance_display = (
+                        primary_state.total_distance_m
+                        if primary_state.total_distance_m > 0
+                        else None
+                    )
+                    peak_accel_display = (
+                        primary_state.peak_accel_mps2
+                        if primary_state.peak_accel_mps2 > 0
+                        else None
+                    )
+                    peak_decel_display = (
+                        primary_state.peak_decel_mps2
+                        if primary_state.peak_decel_mps2 > 0
+                        else None
+                    )
                 player_view = {}
                 for pid, stats in player_totals.items():
                     avg_power = None
@@ -2003,21 +2115,26 @@ def run_touch_detection(
                     if bbox is None or len(bbox) != 4:
                         continue
                     x1, y1, x2, y2 = bbox
-                player_meta.append(
-                    {
-                        "id": str(person.get("id")),
-                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                        "left": _to_point(person.get("left")),
-                        "right": _to_point(person.get("right")),
-                        "speed_kmh": person.get("speed_kmh"),
-                        "left_shoulder": _to_point(left_shoulder),
-                        "right_shoulder": _to_point(right_shoulder),
-                        "left_elbow": _to_point(left_elbow),
-                        "right_elbow": _to_point(right_elbow),
-                        "left_wrist": _to_point(left_wrist),
-                        "right_wrist": _to_point(right_wrist),
-                    }
-                )
+                    player_meta.append(
+                        {
+                            "id": str(person.get("id")),
+                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                            "left": _to_point(person.get("left")),
+                            "right": _to_point(person.get("right")),
+                            "speed_kmh": person.get("speed_kmh"),
+                            "left_shoulder": _to_point(person.get("left_shoulder")),
+                            "right_shoulder": _to_point(person.get("right_shoulder")),
+                            "left_elbow": _to_point(person.get("left_elbow")),
+                            "right_elbow": _to_point(person.get("right_elbow")),
+                            "left_wrist": _to_point(person.get("left_wrist")),
+                            "right_wrist": _to_point(person.get("right_wrist")),
+                            "is_primary": bool(
+                                opts.primary_player_lock
+                                and primary_track_id is not None
+                                and person.get("id") == primary_track_id
+                            ),
+                        }
+                    )
                 ball_meta = None
                 if ball_center is not None and ball_radius is not None:
                     ball_meta = {
@@ -2049,6 +2166,12 @@ def run_touch_detection(
                     "use_homography": use_homography,
                     "ball_class_id": ball_class_id,
                     "ball_class_name": ball_class_name,
+                    "primary_player_lock": bool(opts.primary_player_lock),
+                    "primary_player_id": (
+                        str(primary_track_id)
+                        if opts.primary_player_lock and primary_track_id is not None
+                        else None
+                    ),
                 }
                 if not ground_overlay_sent and ground_overlay_data is not None:
                     frame_meta["ground_overlay"] = ground_overlay_data
@@ -2056,25 +2179,19 @@ def run_touch_detection(
                 yield FrameResult(
                     frame_idx=frame_idx,
                     annotated=annotated,
-                    left_touches=left_touches,
-                    right_touches=right_touches,
+                    left_touches=left_display,
+                    right_touches=right_display,
                     avg_speed_kmh=avg_speed,
                     max_speed_kmh=max_speed,
                     total_time_sec=(frame_idx / fps if fps > 0 else None),
-                    total_distance_m=(
-                        total_distance_m if distance_samples > 0 else None
-                    ),
-                    peak_accel_mps2=(
-                        peak_accel_mps2 if accel_samples > 0 else None
-                    ),
-                    peak_decel_mps2=(
-                        peak_decel_mps2 if decel_samples > 0 else None
-                    ),
+                    total_distance_m=total_distance_display,
+                    peak_accel_mps2=peak_accel_display,
+                    peak_decel_mps2=peak_decel_display,
                     total_jumps=total_jumps,
                     highest_jump_m=highest_jump_m if highest_jump_m > 0 else None,
                     highest_jump_px=highest_jump_px if highest_jump_px > 0 else None,
-                    shot_count=shot_count_total,
-                    pass_count=pass_count,
+                    shot_count=shot_display,
+                    pass_count=pass_display,
                     avg_shot_power=avg_power_display,
                     shot_events=shot_events.copy(),
                     player_stats=player_view,
@@ -2083,20 +2200,46 @@ def run_touch_detection(
     finally:
         cap.release()
 
+    final_state = (
+        resolve_state_for(primary_track_id)
+        if opts.primary_player_lock and primary_track_id is not None
+        else None
+    )
+    left_touches_out = left_touches
+    right_touches_out = right_touches
+    shot_count_out = shot_count_total
+    pass_count_out = pass_count
+    avg_shot_power_out = shot_power_sum / shot_power_samples if shot_power_samples else None
+    total_distance_out = total_distance_m if distance_samples > 0 else None
+    peak_accel_out = peak_accel_mps2 if accel_samples > 0 else None
+    peak_decel_out = peak_decel_mps2 if decel_samples > 0 else None
+    if final_state is not None:
+        left_touches_out = final_state.left_touches
+        right_touches_out = final_state.right_touches
+        shot_count_out = final_state.shots
+        pass_count_out = final_state.passes
+        if final_state.shot_power_count > 0:
+            avg_shot_power_out = final_state.shot_power_total / final_state.shot_power_count
+        else:
+            avg_shot_power_out = None
+        total_distance_out = final_state.total_distance_m if final_state.total_distance_m > 0 else None
+        peak_accel_out = final_state.peak_accel_mps2 if final_state.peak_accel_mps2 > 0 else None
+        peak_decel_out = final_state.peak_decel_mps2 if final_state.peak_decel_mps2 > 0 else None
+
     return {
-        "left_touches": left_touches,
-        "right_touches": right_touches,
+        "left_touches": left_touches_out,
+        "right_touches": right_touches_out,
         "total_jumps": total_jumps,
         "highest_jump_m": highest_jump_m if highest_jump_m > 0 else None,
         "highest_jump_px": highest_jump_px if highest_jump_px > 0 else None,
-        "shot_count": shot_count_total,
-        "pass_count": pass_count,
-        "avg_shot_power": shot_power_sum / shot_power_samples if shot_power_samples else None,
+        "shot_count": shot_count_out,
+        "pass_count": pass_count_out,
+        "avg_shot_power": avg_shot_power_out,
         "shot_events": shot_events,
         "total_time_sec": (frame_idx / fps if fps > 0 else None),
-        "total_distance_m": total_distance_m if distance_samples > 0 else None,
-        "peak_accel_mps2": peak_accel_mps2 if accel_samples > 0 else None,
-        "peak_decel_mps2": peak_decel_mps2 if decel_samples > 0 else None,
+        "total_distance_m": total_distance_out,
+        "peak_accel_mps2": peak_accel_out,
+        "peak_decel_mps2": peak_decel_out,
         "player_stats": {
             pid: {
                 "passes": stats["passes"],

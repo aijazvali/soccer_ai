@@ -126,26 +126,59 @@ def draw_player_overlays(
     show_feet: bool = True,
     show_speed: bool = True,
     use_metric_display: bool = True,
+    only_primary: bool = False,
+    show_full_annotation: bool = False,
 ) -> None:
     cv2 = _cv2()
     if cv2 is None or frame_bgr is None or not players:
         return
+
+    def _draw_joint(pt: Optional[Tuple[float, float]], color: Tuple[int, int, int]) -> None:
+        if pt is None:
+            return
+        cv2.circle(frame_bgr, (int(pt[0]), int(pt[1])), 4, color, -1)
+
+    def _draw_limb(
+        a: Optional[Tuple[float, float]],
+        b: Optional[Tuple[float, float]],
+        color: Tuple[int, int, int],
+    ) -> None:
+        if a is None or b is None:
+            return
+        cv2.line(
+            frame_bgr,
+            (int(a[0]), int(a[1])),
+            (int(b[0]), int(b[1])),
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
     height = frame_bgr.shape[0]
+    default_color = (0, 255, 0)
+    primary_color = (0, 215, 255)
     for player in players:
+        if only_primary and not bool(player.get("is_primary", False)):
+            continue
         bbox = player.get("bbox")
         if not bbox or len(bbox) != 4:
             continue
+        is_primary = bool(player.get("is_primary", False))
+        box_color = primary_color if is_primary else default_color
         x1, y1, x2, y2 = [int(round(v)) for v in bbox]
-        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), box_color, 2)
         if show_ids:
             pid = player.get("id", "?")
+            label = f"ID {pid}"
+            if is_primary:
+                label += " *"
             cv2.putText(
                 frame_bgr,
-                f"ID {pid}",
+                label,
                 (x1, max(0, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 0),
+                box_color,
                 2,
                 cv2.LINE_AA,
             )
@@ -171,6 +204,26 @@ def draw_player_overlays(
                     2,
                     cv2.LINE_AA,
                 )
+        if show_full_annotation:
+            left_shoulder = player.get("left_shoulder")
+            left_elbow = player.get("left_elbow")
+            left_wrist = player.get("left_wrist")
+            right_shoulder = player.get("right_shoulder")
+            right_elbow = player.get("right_elbow")
+            right_wrist = player.get("right_wrist")
+
+            left_color = (255, 180, 0)
+            right_color = (180, 255, 0)
+            _draw_limb(left_shoulder, left_elbow, left_color)
+            _draw_limb(left_elbow, left_wrist, left_color)
+            _draw_limb(right_shoulder, right_elbow, right_color)
+            _draw_limb(right_elbow, right_wrist, right_color)
+            _draw_joint(left_shoulder, left_color)
+            _draw_joint(left_elbow, left_color)
+            _draw_joint(left_wrist, left_color)
+            _draw_joint(right_shoulder, right_color)
+            _draw_joint(right_elbow, right_color)
+            _draw_joint(right_wrist, right_color)
 
 
 def draw_ball_overlay(

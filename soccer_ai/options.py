@@ -25,6 +25,7 @@ class TouchOptions:
     display_stride: int = 1
     calibration_path: Optional[str] = None
     use_homography: bool = cfg.USE_HOMOGRAPHY
+    primary_player_lock: bool = False
     # Detection thresholds (allow ball-specific tuning)
     ball_conf: float = cfg.DET_CONF
     person_conf: float = cfg.DET_CONF
